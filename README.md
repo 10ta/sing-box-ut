@@ -6,19 +6,11 @@ Patches that give sing-box a native VLESS + XHTTP client with split upload/downl
 
 [![verify-download](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml)
 
-```text
-$ test/interop/run.sh ./sing-box xray-bin/xray
-== stream-up / plain
-ok: payload intact, 1 connection(s) via the download server
-== packet-up / plain
-ok: payload intact, 1 connection(s) via the download server
-== stream-up / full
-ok: payload intact, 1 connection(s) via the download server
-== packet-up / full
-ok: payload intact, 1 connection(s) via the download server
-PASS
-```
-*A patched sing-box client against a real Xray 26.11.9 server, upload and download on different addresses.*
+What works today, each item tested against a real Xray server:
+
+- Upload and download through two different servers (Xray `downloadSettings`), each with its own address, TLS and XHTTP options.
+- `stream-up` and `packet-up` modes, over HTTP/2, HTTP/3 (QUIC) and HTTP/1.1.
+- VLESS encryption (`mlkem768x25519plus`), X-Padding obfuscation, XMUX, uTLS fingerprints.
 
 ## Contents
 
@@ -78,7 +70,23 @@ unzip -q xray.zip xray -d xray-bin
 test/interop/run.sh ./sing-box xray-bin/xray
 ```
 
-It ends with `PASS`, as in the output at the top. Each case fetches a 5 MB file through the proxy and checks that the download request went through the second address. The `full` cases use TLS 1.3, HTTP/2, uTLS, VLESS encryption, X-Padding obfuscation and XMUX together.
+Each case fetches a 5 MB file through the proxy and checks that the download request went through the second address. `plain` is cleartext HTTP/1.1. `full` uses TLS 1.3, HTTP/2, uTLS, VLESS encryption, X-Padding obfuscation and XMUX together. `h3` is `full` over HTTP/3. Expected output:
+
+```text
+== stream-up / plain
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / plain
+ok: payload intact, 1 connection(s) via the download server
+== stream-up / full
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / full
+ok: payload intact, 1 connection(s) via the download server
+== stream-up / h3
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / h3
+ok: payload intact, 1 connection(s) via the download server
+PASS
+```
 
 ### Run the same checks in GitHub Actions
 
@@ -102,31 +110,86 @@ Rules, matching Xray:
 - `stream-one` with `download` is rejected. `auto` with `download` becomes `packet-up`, or `stream-up` under REALITY.
 - `download` cannot contain another `download`.
 
-Minimal example (the shape of the `full` case in [`test/interop/gen.py`](test/interop/gen.py)):
+### Complete example
+
+A VLESS outbound that uploads through `up.example.com` and downloads through `down.example.com`. It is the sing-box-ut form of a real Xray client config. Replace every `<…>` placeholder.
 
 ```json
 {
   "type": "vless",
+  "tag": "xhttp-split",
   "server": "up.example.com",
   "server_port": 443,
-  "uuid": "<YOUR_UUID>",
-  "encryption": "<YOUR_VLESS_ENCRYPTION>",
-  "tls": { "enabled": true, "server_name": "up.example.com", "alpn": ["h2", "http/1.1"] },
+  "uuid": "<UUID_FOR_SING_BOX_UT>",
+  "encryption": "<VLESS_ENCRYPTION>",
+  "tls": {
+    "enabled": true,
+    "server_name": "up.example.com",
+    "alpn": ["h2", "http/1.1"],
+    "min_version": "1.3",
+    "utls": { "enabled": true, "fingerprint": "ios" }
+  },
   "transport": {
     "type": "xhttp",
     "mode": "stream-up",
-    "path": "/<YOUR_PATH>/",
+    "path": "/<SECRET_PATH>/",
     "x_padding_bytes": "92-1254",
+    "x_padding_obfs_mode": true,
+    "x_padding_method": "tokenish",
+    "x_padding_placement": "queryInHeader",
+    "x_padding_key": "<PADDING_KEY>",
+    "x_padding_header": "X-Cache",
+    "xmux": {
+      "max_concurrency": "8-16",
+      "c_max_reuse_times": 0,
+      "h_max_request_times": "600-900",
+      "h_max_reusable_secs": "1800-3000",
+      "h_keep_alive_period": 30
+    },
     "download": {
       "server": "down.example.com",
       "server_port": 443,
-      "tls": { "enabled": true, "server_name": "down.example.com", "alpn": ["h2", "http/1.1"] },
-      "path": "/<YOUR_PATH>/",
-      "x_padding_bytes": "92-1254"
+      "tls": {
+        "enabled": true,
+        "server_name": "down.example.com",
+        "alpn": ["h2", "http/1.1"],
+        "min_version": "1.3",
+        "utls": { "enabled": true, "fingerprint": "ios" }
+      },
+      "path": "/<SECRET_PATH>/",
+      "x_padding_bytes": "92-1254",
+      "x_padding_obfs_mode": true,
+      "x_padding_method": "tokenish",
+      "x_padding_placement": "queryInHeader",
+      "x_padding_key": "<PADDING_KEY>",
+      "x_padding_header": "X-Cache",
+      "xmux": {
+        "max_concurrency": "8-16",
+        "c_max_reuse_times": 0,
+        "h_max_request_times": "600-900",
+        "h_max_reusable_secs": "1800-3000",
+        "h_keep_alive_period": 30
+      }
     }
   }
 }
 ```
+
+The matching server side is in [`examples/`](examples/): [`xray-server.json`](examples/xray-server.json) (one Xray inbound) and [`Caddyfile`](examples/Caddyfile) (TLS termination in front of it, on both servers). The client and server examples pass `sing-box check` and `xray run -test`; the Caddyfile has not been run by the author of this document.
+
+### HTTP/3
+
+Set `alpn` to `["h3"]` in `tls` and in `download.tls`, and remove `utls` (fingerprints do not apply to QUIC). The two halves are independent, so one may stay on HTTP/2. The server must be reachable on UDP: Caddy serves HTTP/3 on the UDP port with the same number as its HTTPS port and still forwards h2c to Xray, so the Caddyfile does not change.
+
+### Xray settings without a counterpart
+
+| Xray client setting | Here |
+|---|---|
+| `flow: xtls-rprx-vision` | Not supported. The server must not require a flow for this client: give it its own entry in `clients` without `flow`, and no `flow` at the `settings` level. Xray rejects a flow-less client otherwise |
+| `finalmask.quicParams` (congestion control, receive windows) | Not configurable. It applies to HTTP/3 only; here QUIC runs with quic-go defaults |
+| `finalmask.udp` (noise) | Not supported |
+| `testpre` | Not supported |
+| `flow`, `encryption`, `testpre` inside `downloadSettings` | Not transport settings. Drop them |
 
 | Xray `downloadSettings` | Here |
 |---|---|
@@ -177,6 +240,7 @@ flowchart LR
 │   └── tcp_tap.py                     # stands in for the download server, logs what reaches it
 ├── .github/workflows/
 │   └── verify-download.yml            # apply, vet, test, build, interop
+├── examples/                          # complete configs: sing-box client, Xray server, Caddyfile
 ├── docs/NOTES.zh-CN.md                # research, decisions and pitfalls (Chinese)
 └── AGENTS.md                          # commands and conventions for AI coding agents
 ```
@@ -208,7 +272,8 @@ go test -count=1 -race -tags "with_quic,with_utls,with_clash_api,with_xhttp,badl
 ## 🚧 Limitations & Roadmap
 
 - No binaries are published. The automated build that produces a Linux `.deb` and an Android APK from the latest sing-box alpha is designed in [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md) but is not in this repository yet.
-- Tested on Linux amd64 only. Not tested: a download endpoint over HTTP/3 or REALITY, dialing through a detour, Android.
+- Tested on Linux amd64 only, with Xray terminating TLS itself. Not tested: Caddy in front of Xray, a CDN, REALITY on the download endpoint, dialing through a detour, Android.
+- No Vision flow, and no control over QUIC congestion or windows, see [Configuration](#-configuration).
 - Client only. sing-box-lx has no XHTTP server.
 
 ## 🔀 Upstream & Differences
@@ -230,5 +295,4 @@ Sync is manual: the workflow reports when the patch stops applying, see [Update 
 
 ## 📄 License
 
-<!-- TODO: add a LICENSE file. -->
-No license file yet. The patch modifies sing-box and sing-box-lx source code, which is licensed under GPL-3.0-or-later.
+[GPL-3.0-or-later](LICENSE). The patch modifies sing-box and sing-box-lx source code, which carry the same license.

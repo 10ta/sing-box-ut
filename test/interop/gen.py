@@ -6,6 +6,7 @@ usage: gen.py OUT_DIR MODE SCENARIO XRAY_BIN
   SCENARIO  plain  cleartext HTTP/1.1, default padding
             full   TLS 1.3 + HTTP/2 + uTLS, VLESS encryption, X-Padding obfs
                    and XMUX: the feature set of the real deployment
+            h3     full, but HTTP/3 over QUIC (tls.alpn ["h3"]) on both halves
 
 Upload goes to 127.0.0.1:6501 (the Xray inbound), download to 127.0.0.1:6502
 (tcp_tap.py, which forwards to 6501).
@@ -21,7 +22,9 @@ PATH = "/ut/"
 
 def main():
     out_dir, mode, scenario, xray = sys.argv[1:5]
-    full = scenario == "full"
+    h3 = scenario == "h3"
+    full = scenario == "full" or h3
+    alpn = ["h3"] if h3 else ["h2", "http/1.1"]
 
     server_xhttp = {"path": PATH, "mode": "auto", "xPaddingBytes": "92-1254"}
     client_xhttp = {"path": PATH, "x_padding_bytes": "92-1254"}
@@ -65,7 +68,7 @@ def main():
         )
         server_stream["security"] = "tls"
         server_stream["tlsSettings"] = {
-            "alpn": ["h2", "http/1.1"],
+            "alpn": alpn,
             "certificates": [{"certificate": cert["certificate"], "key": cert["key"]}],
         }
         client_tls = {
@@ -73,10 +76,22 @@ def main():
             "server_name": "localhost",
             "insecure": True,
             "min_version": "1.3",
-            "alpn": ["h2", "http/1.1"],
-            "utls": {"enabled": True, "fingerprint": "ios"},
+            "alpn": alpn,
         }
+        if not h3:  # uTLS does not apply to QUIC
+            client_tls["utls"] = {"enabled": True, "fingerprint": "ios"}
 
+    # A second client that requires Vision sits next to ours, as on a server that
+    # still serves Xray clients. Ours has no flow: sing-box-ut does not do Vision,
+    # and Xray rejects a flow-less client whose account (or a settings-level
+    # "flow") asks for one.
+    server_settings = {
+        "clients": [
+            {"id": "0b1c9d2e-7f43-4a5b-8c6d-9e0f1a2b3c4d", "flow": "xtls-rprx-vision"},
+            {"id": UUID},
+        ],
+        "decryption": decryption,
+    }
     server = {
         "log": {"loglevel": "debug"},
         "inbounds": [
@@ -84,7 +99,7 @@ def main():
                 "listen": "127.0.0.1",
                 "port": 6501,
                 "protocol": "vless",
-                "settings": {"clients": [{"id": UUID}], "decryption": decryption},
+                "settings": server_settings,
                 "streamSettings": server_stream,
             }
         ],

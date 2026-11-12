@@ -1,0 +1,16 @@
+# Runs on both the upload server and the download server. Each one terminates
+# TLS for its own name and forwards the XHTTP path to the same Xray inbound
+# (on the download server, replace 127.0.0.1:6501 with a route to that inbound).
+#
+# HTTP/2 and HTTP/3 use this same block: Caddy answers HTTP/3 on the UDP port
+# with the same number as the HTTPS port, and always talks h2c to Xray.
+
+up.example.com, down.example.com {
+	handle /<SECRET_PATH>/* {
+		reverse_proxy h2c://127.0.0.1:6501 {
+			flush_interval -1
+			# Xray checks Host against xhttpSettings.host.
+			header_up Host xhttp.example.com
+		}
+	}
+}

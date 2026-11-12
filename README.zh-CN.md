@@ -6,19 +6,11 @@
 
 [![verify-download](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml)
 
-```text
-$ test/interop/run.sh ./sing-box xray-bin/xray
-== stream-up / plain
-ok: payload intact, 1 connection(s) via the download server
-== packet-up / plain
-ok: payload intact, 1 connection(s) via the download server
-== stream-up / full
-ok: payload intact, 1 connection(s) via the download server
-== packet-up / full
-ok: payload intact, 1 connection(s) via the download server
-PASS
-```
-*打过补丁的 sing-box 客户端对接真实的 Xray 26.11.9 服务端，上行和下行走不同地址。*
+目前已经实现的功能，每一项都对真实的 Xray 服务端测过：
+
+- 上行和下行走两台不同的服务器（Xray 的 `downloadSettings`），各有各的地址、TLS 和 XHTTP 选项。
+- `stream-up` 和 `packet-up` 两种模式，可走 HTTP/2、HTTP/3（QUIC）和 HTTP/1.1。
+- VLESS encryption（`mlkem768x25519plus`）、X-Padding 混淆、XMUX、uTLS 指纹。
 
 ## 目录
 
@@ -78,7 +70,23 @@ unzip -q xray.zip xray -d xray-bin
 test/interop/run.sh ./sing-box xray-bin/xray
 ```
 
-最后一行是 `PASS`，和页面顶部的输出一样。每个用例通过代理取回一个 5 MB 的文件，并检查下行请求确实走了第二个地址。`full` 用例同时启用 TLS 1.3、HTTP/2、uTLS、VLESS encryption、X-Padding 混淆和 XMUX。
+每个用例通过代理取回一个 5 MB 的文件，并检查下行请求确实走了第二个地址。`plain` 是明文 HTTP/1.1。`full` 同时启用 TLS 1.3、HTTP/2、uTLS、VLESS encryption、X-Padding 混淆和 XMUX。`h3` 是走 HTTP/3 的 `full`。预期输出：
+
+```text
+== stream-up / plain
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / plain
+ok: payload intact, 1 connection(s) via the download server
+== stream-up / full
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / full
+ok: payload intact, 1 connection(s) via the download server
+== stream-up / h3
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / h3
+ok: payload intact, 1 connection(s) via the download server
+PASS
+```
 
 ### 在 GitHub Actions 里跑同样的检查
 
@@ -102,31 +110,86 @@ test/interop/run.sh ./sing-box xray-bin/xray
 - `stream-one` 配 `download` 会报错。`auto` 配 `download` 解析为 `packet-up`，REALITY 下为 `stream-up`。
 - `download` 里不能再嵌套 `download`。
 
-最小示例（结构与 [`test/interop/gen.py`](test/interop/gen.py) 的 `full` 用例相同）：
+### 完整示例
+
+一个 VLESS 出站，上行走 `up.example.com`，下行走 `down.example.com`。它是一份真实 Xray 客户端配置在 sing-box-ut 里的写法。把所有 `<…>` 占位符换成自己的值。
 
 ```json
 {
   "type": "vless",
+  "tag": "xhttp-split",
   "server": "up.example.com",
   "server_port": 443,
-  "uuid": "<YOUR_UUID>",
-  "encryption": "<YOUR_VLESS_ENCRYPTION>",
-  "tls": { "enabled": true, "server_name": "up.example.com", "alpn": ["h2", "http/1.1"] },
+  "uuid": "<UUID_FOR_SING_BOX_UT>",
+  "encryption": "<VLESS_ENCRYPTION>",
+  "tls": {
+    "enabled": true,
+    "server_name": "up.example.com",
+    "alpn": ["h2", "http/1.1"],
+    "min_version": "1.3",
+    "utls": { "enabled": true, "fingerprint": "ios" }
+  },
   "transport": {
     "type": "xhttp",
     "mode": "stream-up",
-    "path": "/<YOUR_PATH>/",
+    "path": "/<SECRET_PATH>/",
     "x_padding_bytes": "92-1254",
+    "x_padding_obfs_mode": true,
+    "x_padding_method": "tokenish",
+    "x_padding_placement": "queryInHeader",
+    "x_padding_key": "<PADDING_KEY>",
+    "x_padding_header": "X-Cache",
+    "xmux": {
+      "max_concurrency": "8-16",
+      "c_max_reuse_times": 0,
+      "h_max_request_times": "600-900",
+      "h_max_reusable_secs": "1800-3000",
+      "h_keep_alive_period": 30
+    },
     "download": {
       "server": "down.example.com",
       "server_port": 443,
-      "tls": { "enabled": true, "server_name": "down.example.com", "alpn": ["h2", "http/1.1"] },
-      "path": "/<YOUR_PATH>/",
-      "x_padding_bytes": "92-1254"
+      "tls": {
+        "enabled": true,
+        "server_name": "down.example.com",
+        "alpn": ["h2", "http/1.1"],
+        "min_version": "1.3",
+        "utls": { "enabled": true, "fingerprint": "ios" }
+      },
+      "path": "/<SECRET_PATH>/",
+      "x_padding_bytes": "92-1254",
+      "x_padding_obfs_mode": true,
+      "x_padding_method": "tokenish",
+      "x_padding_placement": "queryInHeader",
+      "x_padding_key": "<PADDING_KEY>",
+      "x_padding_header": "X-Cache",
+      "xmux": {
+        "max_concurrency": "8-16",
+        "c_max_reuse_times": 0,
+        "h_max_request_times": "600-900",
+        "h_max_reusable_secs": "1800-3000",
+        "h_keep_alive_period": 30
+      }
     }
   }
 }
 ```
+
+对应的服务端在 [`examples/`](examples/) 里：[`xray-server.json`](examples/xray-server.json)（一个 Xray inbound）和 [`Caddyfile`](examples/Caddyfile)（在它前面做 TLS 终结，两台服务器都用）。客户端和服务端示例通过了 `sing-box check` 和 `xray run -test`；Caddyfile 本文档的作者没有实际运行过。
+
+### HTTP/3
+
+把 `tls` 和 `download.tls` 里的 `alpn` 改成 `["h3"]`，并去掉 `utls`（指纹对 QUIC 不生效）。上下行互相独立，可以只改其中一边。服务器必须能通过 UDP 访问：Caddy 在与 HTTPS 端口同号的 UDP 端口上提供 HTTP/3，转发给 Xray 时仍然是 h2c，所以 Caddyfile 不用改。
+
+### 没有对应项的 Xray 设置
+
+| Xray 客户端设置 | 这里 |
+|---|---|
+| `flow: xtls-rprx-vision` | 不支持。服务端不能要求这个客户端带 flow：在 `clients` 里给它单独一项且不写 `flow`，`settings` 层也不要写 `flow`，否则 Xray 会拒绝不带 flow 的客户端 |
+| `finalmask.quicParams`（拥塞控制、接收窗口） | 不可配置。它只对 HTTP/3 生效；这里的 QUIC 用 quic-go 的默认值 |
+| `finalmask.udp`（noise） | 不支持 |
+| `testpre` | 不支持 |
+| `downloadSettings` 里的 `flow`、`encryption`、`testpre` | 不是传输层设置，直接去掉 |
 
 | Xray `downloadSettings` | 这里 |
 |---|---|
@@ -177,6 +240,7 @@ flowchart LR
 │   └── tcp_tap.py                     # stands in for the download server, logs what reaches it
 ├── .github/workflows/
 │   └── verify-download.yml            # apply, vet, test, build, interop
+├── examples/                          # complete configs: sing-box client, Xray server, Caddyfile
 ├── docs/NOTES.zh-CN.md                # research, decisions and pitfalls (Chinese)
 └── AGENTS.md                          # commands and conventions for AI coding agents
 ```
@@ -208,7 +272,8 @@ go test -count=1 -race -tags "with_quic,with_utls,with_clash_api,with_xhttp,badl
 ## 🚧 局限与路线
 
 - 不发布二进制。跟随 sing-box 最新 alpha 自动构建 Linux `.deb` 和 Android APK 的流水线，设计写在 [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md) 里，还没有放进本仓库。
-- 只在 Linux amd64 上测过。没测过：下行端点走 HTTP/3 或 REALITY、经 detour 拨号、Android。
+- 只在 Linux amd64 上测过，并且是 Xray 自己做 TLS 终结。没测过：Xray 前面放 Caddy、CDN、下行端点用 REALITY、经 detour 拨号、Android。
+- 不支持 Vision flow，也不能调 QUIC 的拥塞控制和窗口，见[配置](#-配置)。
 - 只有客户端。sing-box-lx 没有 XHTTP 服务端。
 
 ## 🔀 上游与差异
@@ -230,5 +295,4 @@ go test -count=1 -race -tags "with_quic,with_utls,with_clash_api,with_xhttp,badl
 
 ## 📄 许可
 
-<!-- TODO: add a LICENSE file. -->
-还没有许可证文件。补丁修改的是 sing-box 和 sing-box-lx 的源码，它们的许可证是 GPL-3.0-or-later。
+[GPL-3.0-or-later](LICENSE)。补丁修改的是 sing-box 和 sing-box-lx 的源码，它们用的是同一个许可证。

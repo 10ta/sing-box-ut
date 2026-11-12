@@ -1,0 +1,43 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "tag": "xhttp-in",
+      "listen": "127.0.0.1",
+      "port": 6501,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "<UUID_FOR_SING_BOX_UT>" },
+          { "id": "<UUID_FOR_XRAY_CLIENTS>", "flow": "xtls-rprx-vision" }
+        ],
+        "decryption": "<VLESS_DECRYPTION>"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "none",
+        "sockopt": {
+          "trustedXForwardedFor": ["X-Forwarded-For"]
+        },
+        "xhttpSettings": {
+          "mode": "auto",
+          "host": "xhttp.example.com",
+          "path": "/<SECRET_PATH>/",
+          "extra": {
+            "xPaddingBytes": "92-1254",
+            "noSSEHeader": false,
+            "xPaddingObfsMode": true,
+            "xPaddingMethod": "tokenish",
+            "xPaddingPlacement": "queryInHeader",
+            "xPaddingKey": "<PADDING_KEY>",
+            "xPaddingHeader": "X-Cache",
+            "scMaxEachPostBytes": 1000000,
+            "scMaxBufferedPosts": 30,
+            "scStreamUpServerSecs": "20-80"
+          }
+        }
+      }
+    }
+  ],
+  "outbounds": [{ "protocol": "freedom" }]
+}

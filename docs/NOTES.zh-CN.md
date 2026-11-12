@@ -17,7 +17,8 @@
 - xPadding：`xPaddingBytes` 92-1254，`xPaddingObfsMode`，`xPaddingMethod: tokenish`，`xPaddingPlacement: queryInHeader`，自定义 `xPaddingKey`，`xPaddingHeader: X-Cache`。
 - xmux：`maxConcurrency` 8-16，`cMaxReuseTimes` 0，`hMaxRequestTimes` 600-900，`hMaxReusableSecs` 1800-3000，`hKeepAlivePeriod` 30。
 - **`downloadSettings`：下行走另一台服务器，有独立的 address、TLS、serverName 和 xhttp 参数。这项必须支持。**
-- 可以丢弃：`finalmask.quicParams` 和 `finalmask.udp`（走 TCP/H2，本来就不生效）、`testpre`、Vision。
+- 丢弃：`finalmask.quicParams`、`finalmask.udp`、`testpre`、Vision。理由（2026-11-12 更正）：不是"只走 TCP/H2 所以不生效"。Xray 的 XHTTP 在 alpn 为 `h3` 时走 QUIC，`quicParams` 是生效的，还能穿过支持 QUIC 的 CDN。丢弃的真实原因是 lx 的 HTTP/3 传输把 `quic.Config` 写死了（没有拥塞控制和窗口的配置项），也没有 udp noise。H3 本身是支持的，已测。
+- **Vision 的代价（2026-11-12 实测）**：Xray 26.11.9 里 `settings` 层的 `"flow": "xtls-rprx-vision"` 是生效的，不带 flow 的客户端会被拒（`rejected since the client flow is empty`）。所以服务端要改：去掉 `settings` 层的 `flow`，给 sing-box-ut 单独一个不带 `flow` 的 client，原有 xray 客户端的 client 项各自写 `flow`。这会影响这个 inbound 上的所有现有客户端，要一起改。用户已确认不要 Vision、接受这个代价。
 
 ## 候选实现调研结论
 | 实现 | XHTTP | 下载走另一台服务器 | VLESS enc | 维护方式 |
@@ -51,9 +52,9 @@
 | 上游 `v1.15.0-alpha.13` + 复制的 lx 文件 + 5 处接缝 + 补丁，编出的客户端跑同样 4 个用例 | 通过 | 同上，构建标签去掉了 `with_openvpn,with_openconnect` |
 | `sing-box schema`、`sing-box format` 对递归的 download 选项类型 | 正常 | 同上 |
 
-- 互通用例是 `stream-up` / `packet-up` × `plain` / `full`。`full` 对应真实部署的功能集：TLS 1.3 + H2 + uTLS `ios` + vlessenc（mlkem768x25519plus）+ xPadding 混淆（tokenish、queryInHeader、自定义 key 和 header）+ xmux + download。
+- 互通用例是 `stream-up` / `packet-up` × `plain` / `full` / `h3`（`h3` 是 2026-11-12 加的：`full` 改走 HTTP/3，下行经 UDP 转发，同样通过）。服务端 `clients` 里并排放了一个要求 Vision 的 client 和一个不带 flow 的 client。`full` 对应真实部署的功能集：TLS 1.3 + H2 + uTLS `ios` + vlessenc（mlkem768x25519plus）+ xPadding 混淆（tokenish、queryInHeader、自定义 key 和 header）+ xmux + download。
 - 互通的"下行服务器"是 `tcp_tap.py`：监听 6502，转发到 Xray 的 6501，并记录每条连接的首行。`plain` 下断言只见到 `GET /ut/…`；`full` 下 TLS 看不到请求行，只断言有连接走了下行地址。
-- 没有覆盖：下行走 HTTP/3、下行用 REALITY、经 detour 拨号、真实的两台服务器（Caddy → h2c → xray）、Android。
+- 没有覆盖：下行用 REALITY、经 detour 拨号、真实的两台服务器（Caddy → h2c → xray）、Android。
 - 本地能编译靠的是变通办法（见"踩过的坑"），CI 上不需要。
 
 ### 历史记录：extended 方案需要的东西（已不采用）

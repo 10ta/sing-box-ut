@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""TCP forwarder that logs the first line of every connection ("TLS" for a TLS one).
+"""TCP and UDP forwarder that logs the first line of every TCP connection
+("TLS" for a TLS one) and "QUIC" for every UDP client.
 
 Stands in for the "download server" in the interop test: the sing-box client
 sends its XHTTP download GET here, the tap forwards it to the same Xray inbound
@@ -49,9 +50,37 @@ def handle(client, target_port, log_path):
     pump(upstream, client)
 
 
+def udp_tap(listen_port, target_port, log_path):
+    """Relay UDP (QUIC) both ways, one upstream socket per client address; log "QUIC" per client."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", listen_port))
+    upstreams = {}
+
+    def back(upstream, client):
+        while True:
+            try:
+                data = upstream.recv(65535)
+            except OSError:
+                return
+            server.sendto(data, client)
+
+    while True:
+        data, client = server.recvfrom(65535)
+        upstream = upstreams.get(client)
+        if upstream is None:
+            upstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            upstream.connect(("127.0.0.1", target_port))
+            upstreams[client] = upstream
+            with open(log_path, "a") as log:
+                log.write("QUIC\n")
+            threading.Thread(target=back, args=(upstream, client), daemon=True).start()
+        upstream.send(data)
+
+
 def main():
     listen_port, target_port, log_path = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
     open(log_path, "w").close()
+    threading.Thread(target=udp_tap, args=(listen_port, target_port, log_path), daemon=True).start()
     server = socket.socket()
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("127.0.0.1", listen_port))
