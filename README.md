@@ -1,83 +1,234 @@
-# 交接：sing-box 客户端去掉 xray-core（XHTTP 上下行分离 + VLESS encryption）
+# sing-box-ut
 
-## 背景
-客户端现在是 sing-box（TUN）→ 本机 socks 127.0.0.1:1234 → xray-core（VLESS + XHTTP + vlessenc）。目标是做一个 sing-box 的定制构建，原生支持这条链路，从而去掉客户端上的 xray。要求：跟进 sing-box 最新 tag（含 alpha，因为上游是半年一个大版本）；用 GitHub Actions 自动产出 Linux `.deb` 和 Android `arm64-v8a` APK；失败时发 TG 通知，用户再手动处理。
-**当前状态：暂停。** 原因是选定的 XHTTP 实现不支持上下行分离，这是硬性要求。
+**English** · [简体中文](README.zh-CN.md)
 
-## 运行环境
-- 服务端：Caddy 按 path 反代到 `h2c://127.0.0.1:6501` 的 xray inbound（vless + xhttp `mode:auto`，`security:none`，开了 decryption 和 xPadding 混淆），保持不变。xray 只能做服务端，sing-box 各个移植版本都只实现了客户端。
-- 客户端：Debian 旁路由虚拟机上跑 sing-box；Android 端需要自己编 APK（官方 SFA 不带这些功能）；iOS 不做。
-- 用户本地没有开发环境。计划用公开 GitHub 仓库（Actions 不限分钟数）加 Codespaces（处理补丁冲突）。
+Patches that give sing-box a native VLESS + XHTTP client with split upload/download, so clients can drop xray-core.
 
-## 必须支持的客户端功能（来自用户的 xray 配置）
-- VLESS `encryption`（mlkem768x25519plus），不需要 flow/Vision。
-- XHTTP `mode: stream-up`，H2 + TLS，uTLS 指纹 `ios`，`minVersion` 1.3，alpn h2 / http/1.1。
-- xPadding：`xPaddingBytes` 92-1254，`xPaddingObfsMode`，`xPaddingMethod: tokenish`，`xPaddingPlacement: queryInHeader`，自定义 `xPaddingKey`，`xPaddingHeader: X-Cache`。
-- xmux：`maxConcurrency` 8-16，`cMaxReuseTimes` 0，`hMaxRequestTimes` 600-900，`hMaxReusableSecs` 1800-3000，`hKeepAlivePeriod` 30。
-- **`downloadSettings`：下行走另一台服务器，有独立的 address、TLS、serverName 和 xhttp 参数。这项必须支持。**
-- 可以丢弃：`finalmask.quicParams` 和 `finalmask.udp`（走 TCP/H2，本来就不生效）、`testpre`、Vision。
+[![verify-download](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml)
 
-## 候选实现调研结论
-| 实现 | XHTTP | 下载走另一台服务器 | VLESS enc | 维护方式 |
-|---|---|---|---|---|
-| 上游 sing-box | 无 | — | 无 | — |
-| Leadaxe/sing-box-lx（分支 `lx`） | 有，支持 queryInHeader 和 xmux | **不支持**（文档明确说明，代码忽略该字段） | 有，仅客户端 | 手动 merge `upstream/stable`；只跟稳定版；所有改动用 `lx:begin` 标记 |
-| justinwoo280/sing-xhttp（Go 库） | 有 | 不支持（只能换 host/path，拨号和 TLS 共用） | 无 | v0.1.x |
-| shtorm-7/sing-box-extended（分支 `extended`） | 有 | **支持**：`transport.download` 下可单独设 server、TLS、detour | 有 `encryption` 字段 | 改动分散在各处，不跟上游 tag rebase |
-
-要用 extended 的 XHTTP，需要的东西：
-- 目录 `transport/v2rayxhttp/`（约 2.2k 行）。
-- 上游没有、它自带的包：`common/xray/{,buf,net,pipe,signal/done,utils,uuid}`、`common/congestion`、`common/kmutex`、`common/force_close`。
-- 选项类型写在它改过的 `option/v2ray_transport.go` 里：`V2RayXHTTPBaseOptions`、`V2RayXHTTPOptions`、`V2RayXHTTPDownloadOptions`、`V2RayXHTTPXmuxOptions`，以及 Placement 常量。这些需要搬到 overlay 文件里。
-- 它的 `transport/v2ray/transport.go` 也有改动。
-
-还没评估过的：extended 的 congestion 和 xray 包还会再引入多少依赖；它的 vlessenc 是否和 lx 的实现等价。
-
-## 已有产出（在用户手上：init.sh 和 README.md，基于 lx 方案）
-- `init.sh` 子命令：
-  - `scaffold`：默认命令，生成仓库骨架。
-  - `check`：对比上游最新 tag 和 lx 提交与 `state.json`，输出 `changed` 和 `seams_changed`。
-  - `prepare [TAG]`：浅克隆上游 → 复制 `lx-files.txt` 列出的文件 → 复制 `overlay/` → 提交为 "xenc base" → `git apply patches/*`。
-  - `build`：`DEFAULT_BUILD_TAGS_OTHERS` 加 `with_xhttp`，`CGO_ENABLED=0`，`-mod=mod`。
-  - `deb`：使用上游 `.fpm_systemd`，版本号形如 `1.15.0~alpha.13+xenc.<lx7>`。
-  - `export`：把相对 xenc base 的全部改动写成一个补丁，lx 文件的修正也包含在内。
-  - `save-state`。
-  - `keystore`：生成到 `.secrets/`，已加入 gitignore。
-  - 退出码：10 拉取失败，11 lx 文件缺失，12 补丁失败，13 编译失败，14 打包失败。
-- 仓库结构：`lx-files.txt`、`overlay/`（`constant/v2ray_xenc.go`；`cmd/internal/build_libbox/xenc_tags.go`，用 init() 追加 `with_xhttp`，利用文件名排序晚于 main.go 执行）、`patches/0001-xenc-seams.patch`、`state.json`、`sfa-patches/`、`test/`。
-- 补丁只改 4 个上游文件：
-  - `option/v2ray_transport.go`：加 xhttp 分支和 enum。
-  - `option/vless.go`：加 `Encryption` 字段。
-  - `transport/v2ray/transport.go`：switch 的 default 分支改为查 lx 的 registry。
-  - `protocol/vless/outbound.go`：接入 encryption 的 Init 和 `wrapEncryption`。
-- 从 lx 复制的文件：`transport/v2rayxhttp/`、`transport/v2ray/registry.go`、`include/v2rayxhttp.go`、`option/v2ray_xhttp*.go`、`common/badh2/`、`common/tls/std_config_quic_lx.go`、`protocol/vless/encryption/`（排除 `lx_vision*`）、`protocol/vless/lx_encryption.go`。
-- 如果改用 extended，`init.sh` 的整体结构可以保留，需要改的是：`LX_REPO`/`LX_BRANCH`、`lx-files.txt`、overlay 中的选项文件，以及补丁。
-
-## 关键决策
-- **用补丁文件模式，不 fork。** 上游自带 `.github/workflows`，rebase 时 `GITHUB_TOKEN` 推不了改动 workflow 的提交；换成 PAT 又会触发上游那一堆 workflow。
-- **lx 的文件每次原样复制，只手工维护补丁**：lx 更新能自动跟上。
-- **新增文件一律放 overlay**，例如 tag 和常量，避免改动上游文件中频繁变化的行（`DEFAULT_BUILD_TAGS*`、libbox 的 `sharedTags` 那一行）。
-- **公开仓库**：Actions 不限分钟。60 天无提交会停用定时任务，用每次提交 `state.json` 解决。
-- **Android App 版本不单独跟踪**：上游每个 tag 用 `clients/android` 子模块固定了配套的 SFA 提交。
-
-## 踩过的坑
-- **推荐任何实现之前，先对照用户配置逐个字段核对是否支持。** 这次就是只看了功能列表，漏掉了 `downloadSettings`。
-- Vision 在 XHTTP 上只有开了 vlessenc 才能用，而且只剩 padding 作用；用户已决定不用。
-- lx 的 README 里说"每周自动 rebase"已经过时，它现在只手动 merge 稳定版。
-- 代理环境里 proxy.golang.org、golang.org、go.dev 都访问不了，无法本地编译，只能在 Actions 或 Codespaces 里编。
-- `build_libbox` 要求 Java 版本恰好是 openjdk 17；它只会把 aar 复制到 `../sing-box-for-android/app/libs`，需要手动复制到 `clients/android/app/libs`。
-- deb 的包名就是 `sing-box`，会替换官方包；如果配置了官方 apt 源会被覆盖回去，需要 `apt-mark hold`。
-
-## 待办
-1. 决定 XHTTP 的来源：
-   - (a) 从 extended 抽取 XHTTP 加 download，enc 用 lx 或 extended 的。先评估依赖闭包，以及它对上游 alpha 的适配程度。
-   - (b) 在 lx 的 XHTTP 上自己实现 downloadSettings，可参考 extended `transport/v2rayxhttp/client.go` 里的 `Download` 分支。
-   - (c) 维持现状，客户端继续用 xray。
-2. 选定后：先用户在 Codespaces 里 `./init.sh build` 验证首次编译，再写 workflow：check → linux（prepare/build/deb）→ interop（runner 里起 xray 服务端，自签证书，两个 inbound 模拟分离，curl 验证）→ android → release（prerelease，加 `save-state` 并提交，失败发 TG）。
-
-## 运行
-```bash
-./init.sh && ./init.sh prepare && ./init.sh build    # Codespaces 里运行，需要 Go
-./init.sh check                                       # CI 判断是否需要构建
-# 补丁失败：照 .rej 修改 work/sing-box → 删掉 .rej → ./init.sh build → ./init.sh export → 提交 patches/
+```text
+$ test/interop/run.sh ./sing-box xray-bin/xray
+== stream-up / plain
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / plain
+ok: payload intact, 1 connection(s) via the download server
+== stream-up / full
+ok: payload intact, 1 connection(s) via the download server
+== packet-up / full
+ok: payload intact, 1 connection(s) via the download server
+PASS
 ```
+*A patched sing-box client against a real Xray 26.11.9 server, upload and download on different addresses.*
+
+## Contents
+
+- [Why sing-box-ut?](#-why-sing-box-ut)
+- [Quick Start](#-quick-start)
+- [Usage](#-usage)
+- [Configuration](#-configuration)
+- [Update & Maintenance](#-update--maintenance)
+- [How It Works](#-how-it-works)
+- [Project Structure](#-project-structure)
+- [Development](#-development)
+- [Limitations & Roadmap](#-limitations--roadmap)
+- [Upstream & Differences](#-upstream--differences)
+- [Documentation](#-documentation)
+- [License](#-license)
+
+## 💡 Why sing-box-ut?
+
+Xray's XHTTP can send uploads to one server and downloads to another (`downloadSettings`). No sing-box build could, so a sing-box client that needs it has to run xray-core next to it. This repository carries the missing piece as a patch on top of [sing-box-lx](https://github.com/Leadaxe/sing-box-lx), which already has an XHTTP client and VLESS encryption.
+
+- ✅ Good fit: a sing-box client that talks to an Xray server over VLESS + XHTTP with `downloadSettings`.
+- ❌ Not a fit: you need a ready-made binary (none is published yet, see [Limitations & Roadmap](#-limitations--roadmap)), an XHTTP server (client only, keep Xray on the server), or `stream-one` mode with a split download.
+
+## 🚀 Quick Start
+
+Needs git and Go 1.26 or newer on Linux.
+
+```bash
+git clone https://github.com/10ta/sing-box-ut
+cd sing-box-ut
+git clone --depth 1 -b lx-1.15 --recurse-submodules --shallow-submodules https://github.com/Leadaxe/sing-box-lx lx
+git -C lx apply ../patches/0002-lx-xhttp-download.patch
+cd lx
+env CGO_ENABLED=0 go build -trimpath -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" -ldflags "-s -w -checklinkname=0" -o ../sing-box ./cmd/sing-box
+cd ..
+./sing-box version
+```
+
+The last command prints the build tags, which must include `with_xhttp`:
+
+```text
+sing-box version unknown
+
+Environment: go1.26.6 linux/amd64
+Tags: with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0
+```
+
+## 🧭 Usage
+
+### Verify the client against a real Xray server
+
+Needs bash, python3, curl and unzip, with ports 1080, 6501, 6502 and 8000 free on 127.0.0.1.
+
+```bash
+curl -fsSL -o xray.zip https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip
+unzip -q xray.zip xray -d xray-bin
+test/interop/run.sh ./sing-box xray-bin/xray
+```
+
+It ends with `PASS`, as in the output at the top. Each case fetches a 5 MB file through the proxy and checks that the download request went through the second address. The `full` cases use TLS 1.3, HTTP/2, uTLS, VLESS encryption, X-Padding obfuscation and XMUX together.
+
+### Run the same checks in GitHub Actions
+
+Open **Actions → verify-download → Run workflow**. It also runs on every push that touches the patch, the interop test or the workflow. The job applies the patch to sing-box-lx, runs `gofmt`, `go vet` and the unit tests, builds the client and runs the interop test.
+
+## 🔧 Configuration
+
+The patch adds one object, `download`, to the XHTTP transport of a VLESS outbound. Everything else is sing-box-lx's XHTTP configuration.
+
+| Name | Required | Default | Description |
+|---|---|---|---|
+| `download.server` | ✅ | — | Address of the download server |
+| `download.server_port` | ✅ | — | Port of the download server |
+| `download.tls` | ❌ | cleartext | Outbound TLS options for the download server |
+| `download.path`, `host`, `headers`, `x_padding_*`, `xmux`, … | ❌ | transport defaults | The XHTTP options of the download request. Nothing is inherited from the upload side |
+| `download.mode` | ❌ | upload side's mode | Leave empty. A different value is rejected |
+
+Rules, matching Xray:
+
+- The download request shares the session id with the upload and uses the outbound's own dialer (detour, bind).
+- `stream-one` with `download` is rejected. `auto` with `download` becomes `packet-up`, or `stream-up` under REALITY.
+- `download` cannot contain another `download`.
+
+Minimal example (the shape of the `full` case in [`test/interop/gen.py`](test/interop/gen.py)):
+
+```json
+{
+  "type": "vless",
+  "server": "up.example.com",
+  "server_port": 443,
+  "uuid": "<YOUR_UUID>",
+  "encryption": "<YOUR_VLESS_ENCRYPTION>",
+  "tls": { "enabled": true, "server_name": "up.example.com", "alpn": ["h2", "http/1.1"] },
+  "transport": {
+    "type": "xhttp",
+    "mode": "stream-up",
+    "path": "/<YOUR_PATH>/",
+    "x_padding_bytes": "92-1254",
+    "download": {
+      "server": "down.example.com",
+      "server_port": 443,
+      "tls": { "enabled": true, "server_name": "down.example.com", "alpn": ["h2", "http/1.1"] },
+      "path": "/<YOUR_PATH>/",
+      "x_padding_bytes": "92-1254"
+    }
+  }
+}
+```
+
+| Xray `downloadSettings` | Here |
+|---|---|
+| `address`, `port` | `download.server`, `download.server_port` |
+| `security`, `tlsSettings` | `download.tls` |
+| `xhttpSettings.*` | `download.*` in snake_case, for example `xPaddingBytes` → `x_padding_bytes` |
+
+## 🔄 Update & Maintenance
+
+### When sing-box-lx changes
+
+The workflow follows the tip of `lx-1.15`. If lx touches the lines the patch changes, the "Apply the download patch" step fails. Rebuild the patch in a fresh lx clone:
+
+```bash
+git -C lx apply --reject ../patches/0002-lx-xhttp-download.patch
+# fix every *.rej by hand, delete them, then:
+git -C lx add -A
+git -C lx diff --cached > patches/0002-lx-xhttp-download.patch
+```
+
+### When Xray releases a new version
+
+The interop test pins Xray (`XRAY_VERSION` in the workflow) because server defaults change between releases. To move the pin, run the workflow with the new tag in the `xray_version` input, and change the default once it passes.
+
+## 🧠 How It Works
+
+```mermaid
+flowchart LR
+  C[sing-box client] -- "upload: POST, session id" --> U[upload server]
+  C -- "download: GET, same session id" --> D[download server]
+  U --> X[Xray XHTTP inbound]
+  D --> X
+```
+
+- **The download endpoint is a second XHTTP client** → it reuses every request-shaping rule (padding, placement, headers, HTTP version) and gets its own connection pool, with about 70 changed lines in existing sing-box-lx files.
+- **Both pooled connections are released together** → a closed or failed connection can never leak a slot in either pool.
+- **A patch, not a fork** → sing-box-lx keeps moving. A patch on four of its files is cheap to carry and fails loudly when it stops applying.
+
+## 📁 Project Structure
+
+```text
+.
+├── patches/
+│   └── 0002-lx-xhttp-download.patch   # the change: XHTTP download endpoint + unit tests
+├── test/interop/
+│   ├── run.sh                         # runs every case against a real Xray
+│   ├── gen.py                         # writes the Xray and sing-box configs for one case
+│   └── tcp_tap.py                     # stands in for the download server, logs what reaches it
+├── .github/workflows/
+│   └── verify-download.yml            # apply, vet, test, build, interop
+├── docs/NOTES.zh-CN.md                # research, decisions and pitfalls (Chinese)
+└── AGENTS.md                          # commands and conventions for AI coding agents
+```
+
+Files the patch changes in sing-box-lx:
+
+| File | Change |
+|---|---|
+| `option/v2ray_xhttp.go` | Adds the `download` field |
+| `option/v2ray_xhttp_download_ut.go` | New: the `download` option type |
+| `transport/v2rayxhttp/client.go` | Builds the download endpoint, resolves the mode |
+| `transport/v2rayxhttp/conn.go` | Sends the download GET through the download endpoint |
+| `transport/v2rayxhttp/xmux.go` | Releases the download connection with the upload one |
+| `transport/v2rayxhttp/download_ut.go` | New: download endpoint logic |
+| `transport/v2rayxhttp/download_ut_test.go` | New: unit tests |
+
+## 🔨 Development
+
+Run inside the patched `lx` directory from [Quick Start](#-quick-start):
+
+```bash
+gofmt -l option/v2ray_xhttp*.go transport/v2rayxhttp/
+go vet -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
+go test -count=1 -race -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
+```
+
+`gofmt` prints nothing and both test packages report `ok`. Lines the patch adds to lx files are marked `// ut:`. Keep new code in the `*_ut.go` files so the patch touches as few lx lines as possible.
+
+## 🚧 Limitations & Roadmap
+
+- No binaries are published. The automated build that produces a Linux `.deb` and an Android APK from the latest sing-box alpha is designed in [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md) but is not in this repository yet.
+- Tested on Linux amd64 only. Not tested: a download endpoint over HTTP/3 or REALITY, dialing through a detour, Android.
+- Client only. sing-box-lx has no XHTTP server.
+
+## 🔀 Upstream & Differences
+
+Based on [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) branch `lx-1.15` at `20723b7`, which merges [SagerNet/sing-box](https://github.com/SagerNet/sing-box) `v1.15.0-alpha.13`.
+
+| Aspect | sing-box | sing-box-lx | This repository |
+|---|---|---|---|
+| XHTTP client | ❌ | ✅ | ✅ |
+| VLESS encryption | ❌ | ✅ | ✅ |
+| Download through another server | ❌ | ❌ | ✅ |
+
+Sync is manual: the workflow reports when the patch stops applying, see [Update & Maintenance](#-update--maintenance).
+
+## 📚 Documentation
+
+- [AGENTS.md](AGENTS.md): commands, conventions and pitfalls for AI coding agents.
+- [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md): research on the candidate implementations, design decisions, test record and pitfalls (Chinese).
+
+## 📄 License
+
+<!-- TODO: add a LICENSE file. -->
+No license file yet. The patch modifies sing-box and sing-box-lx source code, which is licensed under GPL-3.0-or-later.

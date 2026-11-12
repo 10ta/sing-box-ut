@@ -1,0 +1,610 @@
+diff --git a/option/v2ray_xhttp.go b/option/v2ray_xhttp.go
+index fa772ae15..806b2a735 100644
+--- a/option/v2ray_xhttp.go
++++ b/option/v2ray_xhttp.go
+@@ -49,6 +49,10 @@ type V2RayXHTTPOptions struct {
+ 	// stream-one dial can hang until timeout.
+ 	NoGRPCHeader bool `json:"no_grpc_header,omitempty"`
+ 
++	// ut: Download sends the download half of stream-up/packet-up to another
++	// server (Xray downloadSettings). See V2RayXHTTPDownloadOptions.
++	Download *V2RayXHTTPDownloadOptions `json:"download,omitempty"`
++
+ 	// ---- session / seq placement (core) -------------------------------------
+ 
+ 	// SessionPlacement selects where the session id is carried on every request:
+diff --git a/option/v2ray_xhttp_download_ut.go b/option/v2ray_xhttp_download_ut.go
+new file mode 100644
+index 000000000..5f84a0cc5
+--- /dev/null
++++ b/option/v2ray_xhttp_download_ut.go
+@@ -0,0 +1,26 @@
++package option
++
++// ut: XHTTP downloadSettings (sing-box-ut addition on top of sing-box-lx).
++//
++// V2RayXHTTPDownloadOptions sends the download half of a split XHTTP mode
++// (stream-up, packet-up) to another server, like Xray's
++// xhttpSettings.downloadSettings: its own address, TLS and XHTTP request
++// options, and its own XMUX pool. Nothing is inherited from the upload side —
++// Xray builds downloadSettings as a complete stream config too — except the
++// outbound's dialer and the session id, which both halves must share.
++//
++// Mode and download are taken from the upload side and must stay empty here.
++//
++//	"transport": {
++//	  "type": "xhttp", "mode": "stream-up", "path": "/up/", ...,
++//	  "download": {
++//	    "server": "down.example.com", "server_port": 443,
++//	    "tls": { "enabled": true, "server_name": "down.example.com", ... },
++//	    "path": "/down/", "x_padding_bytes": "100-1000", ...
++//	  }
++//	}
++type V2RayXHTTPDownloadOptions struct {
++	ServerOptions
++	OutboundTLSOptionsContainer
++	V2RayXHTTPOptions
++}
+diff --git a/transport/v2rayxhttp/client.go b/transport/v2rayxhttp/client.go
+index d9b33628d..7112db291 100644
+--- a/transport/v2rayxhttp/client.go
++++ b/transport/v2rayxhttp/client.go
+@@ -81,6 +81,9 @@ type Client struct {
+ 	// serverName is the TLS server name, the subject of the REUSED `tls` stage a
+ 	// connection test records for a pooled transport (lx: SPEC 139).
+ 	serverName string
++	// ut: download is the endpoint the download GET of stream-up/packet-up
++	// goes to (Xray downloadSettings); nil sends it to this client itself.
++	download *Client
+ }
+ 
+ // NewClient builds an XHTTP client transport. The tlsConfig (possibly Reality)
+@@ -97,6 +100,15 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
+ 	default:
+ 		return nil, E.New("v2ray-xhttp: unknown mode: ", mode)
+ 	}
++	// ut: downloadSettings — a split connection dials the mode Xray resolves
++	// for it, settled here so the placement checks below see that mode.
++	if options.Download != nil {
++		var err error
++		mode, err = downloadMode(mode, tlsConfigIsReality(tlsConfig))
++		if err != nil {
++			return nil, err
++		}
++	}
+ 
+ 	paddingRange, err := parseRangeOr(options.XPaddingBytes, "x_padding_bytes", intRange{100, 1000})
+ 	if err != nil {
+@@ -235,7 +247,17 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
+ 		}
+ 	}
+ 
++	// ut: downloadSettings — the download endpoint gets its own server and pool.
++	var download *Client
++	if options.Download != nil {
++		download, err = newDownloadClient(ctx, dialer, options.Download, mode, logger)
++		if err != nil {
++			return nil, err
++		}
++	}
++
+ 	return &Client{
++		download:       download,
+ 		ctx:            ctx,
+ 		dialer:         dialer,
+ 		serverAddr:     serverAddr,
+@@ -310,6 +332,9 @@ func (c *Client) dialMode(ctx context.Context, sessionID string, xmuxClient *xmu
+ 
+ func (c *Client) Close() error {
+ 	c.xmux.Close()
++	if c.download != nil { // ut
++		c.download.Close()
++	}
+ 	return nil
+ }
+ 
+diff --git a/transport/v2rayxhttp/conn.go b/transport/v2rayxhttp/conn.go
+index 8d5ededee..bd8dce714 100644
+--- a/transport/v2rayxhttp/conn.go
++++ b/transport/v2rayxhttp/conn.go
+@@ -191,7 +191,14 @@ func (c *Client) dialStreamUp(ctx context.Context, sessionID string, xmuxClient
+ 	// lx: SPEC 072 — conn-scoped request context; see dialStreamOne.
+ 	connCtx, connCancel := context.WithCancel(trace.requestContext(c.transportContext())) // lx: SPEC 139 — the trace, not the dial's cancellation
+ 	// Download: GET response body (no seq — stream mode).
+-	downReq, err := c.newRequest(connCtx, http.MethodGet, sessionID, "", nil)
++	// ut: downloadSettings — the GET is shaped by and sent over the download
++	// endpoint when one is configured (downloadLeg returns c otherwise).
++	down, downXmux, err := c.downloadLeg(ctx, xmuxClient, release)
++	if err != nil {
++		connCancel()
++		return nil, err
++	}
++	downReq, err := down.newRequest(connCtx, http.MethodGet, sessionID, "", nil)
+ 	if err != nil {
+ 		connCancel()
+ 		return nil, err
+@@ -209,7 +216,8 @@ func (c *Client) dialStreamUp(ctx context.Context, sessionID string, xmuxClient
+ 	conn := newSplitConn(pipeReader, pipeWriter, c.serverAddr, release)
+ 	conn.cancel = connCancel
+ 	go func() {
+-		downResp, err := xmuxClient.roundTrip(downReq)
++		// ut: the download endpoint's pool when split.
++		downResp, err := downXmux.roundTrip(downReq)
+ 		trace.response(downResp, err) // lx: SPEC 139
+ 		if err != nil {
+ 			conn.fail(E.Cause(err, "open download"))
+@@ -287,7 +295,13 @@ func (c *Client) dialPacketUp(ctx context.Context, sessionID string, xmuxClient
+ 	_ = ctx
+ 	connCtx, connCancel := context.WithCancel(trace.requestContext(c.transportContext())) // lx: SPEC 139 — the trace, not the dial's cancellation
+ 	// Download stream: GET with the session id but no seq (downlink).
+-	downReq, err := c.newRequest(connCtx, http.MethodGet, sessionID, "", nil)
++	// ut: downloadSettings — see dialStreamUp.
++	down, downXmux, err := c.downloadLeg(ctx, xmuxClient, release)
++	if err != nil {
++		connCancel()
++		return nil, err
++	}
++	downReq, err := down.newRequest(connCtx, http.MethodGet, sessionID, "", nil)
+ 	if err != nil {
+ 		connCancel()
+ 		return nil, err
+@@ -295,7 +309,8 @@ func (c *Client) dialPacketUp(ctx context.Context, sessionID string, xmuxClient
+ 	conn := newPacketConn(connCtx, c, sessionID, c.serverAddr, release)
+ 	conn.cancel = connCancel
+ 	go func() {
+-		downResp, err := xmuxClient.roundTrip(downReq)
++		// ut: the download endpoint's pool when split.
++		downResp, err := downXmux.roundTrip(downReq)
+ 		trace.response(downResp, err) // lx: SPEC 139
+ 		if err != nil {
+ 			conn.fail(E.Cause(err, "open download"))
+@@ -482,12 +497,12 @@ type connBreaker struct {
+ func (b *connBreaker) noteRead(err error) {
+ 	if err == nil {
+ 		if !b.readOK.Swap(true) {
+-			b.xmux.noteSuccess()
++			b.xmux.noteDownloadSuccess() // ut: both legs when split
+ 		}
+ 		return
+ 	}
+ 	if err != io.EOF && !b.localClosed.Load() {
+-		b.xmux.noteFailure()
++		b.xmux.noteDownloadFailure() // ut: the download leg when split
+ 	}
+ }
+ 
+diff --git a/transport/v2rayxhttp/download_ut.go b/transport/v2rayxhttp/download_ut.go
+new file mode 100644
+index 000000000..6eb8b6f5c
+--- /dev/null
++++ b/transport/v2rayxhttp/download_ut.go
+@@ -0,0 +1,119 @@
++package v2rayxhttp
++
++// ut: XHTTP downloadSettings (sing-box-ut addition on top of sing-box-lx).
++//
++// With option.V2RayXHTTPOptions.Download set, the download GET of stream-up
++// and packet-up goes to a second endpoint — its own server, TLS, Host, path,
++// headers, padding/placement and XMUX pool — while the upload stays on the
++// primary one. This mirrors Xray's dialer (transport/internet/splithttp
++// dialer.go): the download request is built from downloadSettings alone, the
++// session id is shared, and stream-one cannot be split.
++//
++// The download endpoint is a full *Client built by NewClient from the download
++// options, so every request-shaping rule (meta placement, X-Padding, default
++// headers, HTTP version by tls.alpn/REALITY) applies to it unchanged; only its
++// newRequest, xmux pool and Close are used.
++
++import (
++	"context"
++
++	"github.com/sagernet/sing-box/common/tls"
++	"github.com/sagernet/sing-box/log"
++	"github.com/sagernet/sing-box/option"
++	E "github.com/sagernet/sing/common/exceptions"
++	N "github.com/sagernet/sing/common/network"
++)
++
++// downloadMode is the mode both halves dial when a download endpoint is set.
++// Xray: "auto" is packet-up, and stream-one under REALITY becomes stream-up
++// once downloadSettings is present.
++func downloadMode(mode string, realityEnabled bool) (string, error) {
++	switch mode {
++	case modeStreamOne:
++		return "", E.New(`v2ray-xhttp: can not use "download" in "stream-one" mode`)
++	case modeAuto:
++		if realityEnabled {
++			return modeStreamUp, nil
++		}
++		return modePacketUp, nil
++	default:
++		return mode, nil
++	}
++}
++
++// newDownloadClient builds the download endpoint. dialer is the outbound's own
++// dialer: like the upload side, the download connection leaves through the
++// outbound's dial options (detour, bind, domain resolver).
++func newDownloadClient(ctx context.Context, dialer N.Dialer, options *option.V2RayXHTTPDownloadOptions, mode string, logger log.ContextLogger) (*Client, error) {
++	if options.Download != nil {
++		return nil, E.New(`v2ray-xhttp: "download" can not be nested`)
++	}
++	if options.Mode != "" && options.Mode != mode {
++		return nil, E.New(`v2ray-xhttp: download.mode is taken from the upload side, remove it (got "`, options.Mode, `", dialing "`, mode, `")`)
++	}
++	if options.Server == "" {
++		return nil, E.New("v2ray-xhttp: download.server is required")
++	}
++	if options.ServerPort == 0 {
++		return nil, E.New("v2ray-xhttp: download.server_port is required")
++	}
++	if logger == nil {
++		logger = log.NewNOPFactory().NewLogger("xhttp")
++	}
++	var tlsConfig tls.Config
++	if options.TLS != nil {
++		var err error
++		tlsConfig, err = tls.NewClient(ctx, logger, options.Server, *options.TLS)
++		if err != nil {
++			return nil, E.Cause(err, "v2ray-xhttp: download TLS")
++		}
++	}
++	xhttpOptions := options.V2RayXHTTPOptions
++	xhttpOptions.Mode = mode
++	xhttpOptions.Download = nil
++	transport, err := NewClient(ctx, dialer, options.ServerOptions.Build(), xhttpOptions, tlsConfig)
++	if err != nil {
++		return nil, E.Cause(err, "v2ray-xhttp: download")
++	}
++	return transport.(*Client), nil
++}
++
++// downloadLeg returns the client that shapes the download GET and the pooled
++// connection that carries it. Without a download endpoint that is the upload
++// side itself. With one, a connection is taken from the download pool and its
++// release is chained onto the dial's release handle, so every path that
++// releases the dial (Close, fail, a failed raise, a DialContext error) returns
++// both pooled connections exactly once.
++func (c *Client) downloadLeg(ctx context.Context, xmuxClient *xmuxClient, release *xmuxRelease) (*Client, *xmuxClient, error) {
++	if c.download == nil {
++		return c, xmuxClient, nil
++	}
++	downXmux, err := c.download.xmux.getContext(ctx)
++	if err != nil {
++		return nil, nil, E.Cause(err, "v2ray-xhttp: download")
++	}
++	downXmux.addOpenUsage(1)
++	release.next = newXmuxRelease(downXmux)
++	return c.download, downXmux, nil
++}
++
++// noteDownloadSuccess credits a first successful download-body read. Without a
++// download endpoint it is plain noteSuccess. Split, it credits both pooled
++// connections: an Xray server sends downlink bytes for a session only once the
++// paired upload has reached it, so data on the download proves both legs.
++func (r *xmuxRelease) noteDownloadSuccess() {
++	r.noteSuccess()
++	if r != nil {
++		r.next.noteSuccess()
++	}
++}
++
++// noteDownloadFailure charges a remote download-body error to the connection
++// that carried the download: the download endpoint's when split.
++func (r *xmuxRelease) noteDownloadFailure() {
++	if r != nil && r.next != nil {
++		r.next.noteFailure()
++		return
++	}
++	r.noteFailure()
++}
+diff --git a/transport/v2rayxhttp/download_ut_test.go b/transport/v2rayxhttp/download_ut_test.go
+new file mode 100644
+index 000000000..cb5ae40fc
+--- /dev/null
++++ b/transport/v2rayxhttp/download_ut_test.go
+@@ -0,0 +1,270 @@
++package v2rayxhttp
++
++// ut: tests for the XHTTP download endpoint (downloadSettings). Two plain
++// HTTP/1.1 httptest servers stand in for the upload and download servers; the
++// client must send uploads to one and the download GET to the other, with the
++// same session id and each side's own path and Host.
++
++import (
++	"context"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing-box/option"
++	M "github.com/sagernet/sing/common/metadata"
++	N "github.com/sagernet/sing/common/network"
++)
++
++type splitSeen struct {
++	method string
++	path   string
++	host   string
++}
++
++// splitServer answers like an XHTTP server: a GET gets a flushed downlink body
++// "down" and is held open, any other request is drained and answered 200.
++type splitServer struct {
++	server *httptest.Server
++	access sync.Mutex
++	seen   []splitSeen
++}
++
++func newSplitServer(t *testing.T) *splitServer {
++	t.Helper()
++	s := &splitServer{}
++	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		s.access.Lock()
++		s.seen = append(s.seen, splitSeen{method: r.Method, path: r.URL.Path, host: r.Host})
++		s.access.Unlock()
++		if r.Method == http.MethodGet {
++			w.WriteHeader(http.StatusOK)
++			w.Write([]byte("down"))
++			w.(http.Flusher).Flush()
++			<-r.Context().Done()
++			return
++		}
++		http.NewResponseController(w).EnableFullDuplex()
++		w.WriteHeader(http.StatusOK)
++		w.(http.Flusher).Flush()
++		io.Copy(io.Discard, r.Body)
++	}))
++	t.Cleanup(s.server.Close)
++	return s
++}
++
++func (s *splitServer) addr() M.Socksaddr {
++	return M.SocksaddrFromNet(s.server.Listener.Addr().(*net.TCPAddr))
++}
++
++func (s *splitServer) wait(t *testing.T, method string) splitSeen {
++	t.Helper()
++	deadline := time.Now().Add(5 * time.Second)
++	for time.Now().Before(deadline) {
++		s.access.Lock()
++		for _, request := range s.seen {
++			if request.method == method {
++				s.access.Unlock()
++				return request
++			}
++		}
++		s.access.Unlock()
++		time.Sleep(10 * time.Millisecond)
++	}
++	t.Fatalf("server %s saw no %s", s.server.URL, method)
++	return splitSeen{}
++}
++
++func (s *splitServer) count(method string) int {
++	s.access.Lock()
++	defer s.access.Unlock()
++	n := 0
++	for _, request := range s.seen {
++		if request.method == method {
++			n++
++		}
++	}
++	return n
++}
++
++func splitOptions(mode string, down *splitServer) option.V2RayXHTTPOptions {
++	address := down.addr()
++	return option.V2RayXHTTPOptions{
++		Mode: mode,
++		Path: "/up/",
++		Host: "up.example",
++		Download: &option.V2RayXHTTPDownloadOptions{
++			ServerOptions: option.ServerOptions{Server: address.AddrString(), ServerPort: address.Port},
++			V2RayXHTTPOptions: option.V2RayXHTTPOptions{
++				Path: "/down/",
++				Host: "down.example",
++			},
++		},
++	}
++}
++
++func newSplitClient(t *testing.T, up *splitServer, options option.V2RayXHTTPOptions) *Client {
++	t.Helper()
++	transport, err := NewClient(context.Background(), N.SystemDialer, up.addr(), options, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	client := transport.(*Client)
++	t.Cleanup(func() { client.Close() })
++	return client
++}
++
++func poolUsage(m *xmuxManager) int {
++	m.access.Lock()
++	clients := append([]*xmuxClient(nil), m.clients...)
++	m.access.Unlock()
++	total := 0
++	for _, client := range clients {
++		total += client.getOpenUsage()
++	}
++	return total
++}
++
++func TestDownloadSplit(t *testing.T) {
++	for _, mode := range []string{modeStreamUp, modePacketUp, modeAuto} {
++		t.Run(mode, func(t *testing.T) {
++			up, down := newSplitServer(t), newSplitServer(t)
++			client := newSplitClient(t, up, splitOptions(mode, down))
++			if mode == modeAuto && client.mode != modePacketUp {
++				t.Fatalf("auto with download resolved to %q, want packet-up (no REALITY)", client.mode)
++			}
++			conn, err := client.DialContext(context.Background())
++			if err != nil {
++				t.Fatal(err)
++			}
++			if _, err := conn.Write([]byte("ping")); err != nil {
++				t.Fatal(err)
++			}
++			buffer := make([]byte, 4)
++			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
++			if _, err := io.ReadFull(conn, buffer); err != nil || string(buffer) != "down" {
++				t.Fatalf("download read = %q, %v", buffer, err)
++			}
++
++			get := down.wait(t, http.MethodGet)
++			post := up.wait(t, http.MethodPost)
++			if n := up.count(http.MethodGet); n != 0 {
++				t.Fatalf("upload server saw %d GETs", n)
++			}
++			if n := down.count(http.MethodPost); n != 0 {
++				t.Fatalf("download server saw %d POSTs", n)
++			}
++			if !strings.HasPrefix(get.path, "/down/") || get.host != "down.example" {
++				t.Fatalf("download GET %s Host %s, want /down/<sid> Host down.example", get.path, get.host)
++			}
++			if !strings.HasPrefix(post.path, "/up/") || post.host != "up.example" {
++				t.Fatalf("upload POST %s Host %s, want /up/<sid> Host up.example", post.path, post.host)
++			}
++			getSession := strings.TrimPrefix(get.path, "/down/")
++			postSession, _, _ := strings.Cut(strings.TrimPrefix(post.path, "/up/"), "/") // packet-up appends /<seq>
++			if getSession == "" || getSession != postSession {
++				t.Fatalf("session ids differ: download %q, upload %q", getSession, postSession)
++			}
++
++			if poolUsage(client.xmux) != 1 || poolUsage(client.download.xmux) != 1 {
++				t.Fatalf("open usage up=%d down=%d, want 1/1", poolUsage(client.xmux), poolUsage(client.download.xmux))
++			}
++			conn.Close()
++			conn.Close() // idempotent: a second Close must not drive usage negative
++			if poolUsage(client.xmux) != 0 || poolUsage(client.download.xmux) != 0 {
++				t.Fatalf("after Close usage up=%d down=%d, want 0/0", poolUsage(client.xmux), poolUsage(client.download.xmux))
++			}
++		})
++	}
++}
++
++func TestDownloadRejected(t *testing.T) {
++	up, down := newSplitServer(t), newSplitServer(t)
++	for name, mutate := range map[string]func(*option.V2RayXHTTPOptions){
++		"stream-one":   func(o *option.V2RayXHTTPOptions) { o.Mode = modeStreamOne },
++		"nested":       func(o *option.V2RayXHTTPOptions) { o.Download.Download = &option.V2RayXHTTPDownloadOptions{} },
++		"mode-differs": func(o *option.V2RayXHTTPOptions) { o.Mode = modePacketUp; o.Download.Mode = modeStreamUp },
++		"no-server":    func(o *option.V2RayXHTTPOptions) { o.Download.Server = "" },
++		"no-port":      func(o *option.V2RayXHTTPOptions) { o.Download.ServerPort = 0 },
++	} {
++		t.Run(name, func(t *testing.T) {
++			options := splitOptions(modeStreamUp, down)
++			mutate(&options)
++			if _, err := NewClient(context.Background(), N.SystemDialer, up.addr(), options, nil); err == nil {
++				t.Fatal("accepted")
++			}
++		})
++	}
++}
++
++// TestDownloadAbsentUnchanged: without download the GET stays on the upload
++// server, as before.
++func TestDownloadAbsentUnchanged(t *testing.T) {
++	up := newSplitServer(t)
++	client := newSplitClient(t, up, option.V2RayXHTTPOptions{Mode: modeStreamUp, Path: "/up/"})
++	if client.download != nil {
++		t.Fatal("download endpoint without download options")
++	}
++	conn, err := client.DialContext(context.Background())
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	conn.Write([]byte("ping"))
++	up.wait(t, http.MethodGet)
++	up.wait(t, http.MethodPost)
++}
++
++// TestDownloadEndpointFailure: a download server that is down or rejects the
++// GET fails the connection's reads and returns both pooled connections.
++func TestDownloadEndpointFailure(t *testing.T) {
++	refused, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	refusedAddr := M.SocksaddrFromNet(refused.Addr().(*net.TCPAddr))
++	refused.Close() // nothing listens there any more
++	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		http.Error(w, "no such session", http.StatusBadRequest)
++	}))
++	t.Cleanup(rejecting.Close)
++	rejectingAddr := M.SocksaddrFromNet(rejecting.Listener.Addr().(*net.TCPAddr))
++
++	for name, address := range map[string]M.Socksaddr{"refused": refusedAddr, "status-400": rejectingAddr} {
++		for _, mode := range []string{modeStreamUp, modePacketUp} {
++			t.Run(name+"/"+mode, func(t *testing.T) {
++				up := newSplitServer(t)
++				client := newSplitClient(t, up, option.V2RayXHTTPOptions{
++					Mode: mode,
++					Path: "/up/",
++					Download: &option.V2RayXHTTPDownloadOptions{
++						ServerOptions:     option.ServerOptions{Server: address.AddrString(), ServerPort: address.Port},
++						V2RayXHTTPOptions: option.V2RayXHTTPOptions{Path: "/down/"},
++					},
++				})
++				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++				defer cancel()
++				conn, err := client.DialContext(ctx)
++				if err == nil {
++					conn.SetReadDeadline(time.Now().Add(5 * time.Second))
++					_, err = conn.Read(make([]byte, 1))
++					conn.Close()
++				}
++				if err == nil {
++					t.Fatal("read succeeded with a failing download endpoint")
++				}
++				if n := up.count(http.MethodGet); n != 0 {
++					t.Fatalf("download fell back to the upload server (%d GETs)", n)
++				}
++				if poolUsage(client.xmux) != 0 || poolUsage(client.download.xmux) != 0 {
++					t.Fatalf("usage up=%d down=%d after failure, want 0/0", poolUsage(client.xmux), poolUsage(client.download.xmux))
++				}
++			})
++		}
++	}
++}
+diff --git a/transport/v2rayxhttp/xmux.go b/transport/v2rayxhttp/xmux.go
+index a1d6c02c0..97eb7c57f 100644
+--- a/transport/v2rayxhttp/xmux.go
++++ b/transport/v2rayxhttp/xmux.go
+@@ -206,6 +206,9 @@ func (c *xmuxClient) roundTrip(request *http.Request) (*http.Response, error) {
+ type xmuxRelease struct {
+ 	client *xmuxClient
+ 	once   sync.Once
++	// ut: next is the download endpoint's pooled connection (downloadSettings),
++	// released together with this one; nil without a download endpoint.
++	next *xmuxRelease
+ }
+ 
+ func newXmuxRelease(client *xmuxClient) *xmuxRelease {
+@@ -213,12 +216,15 @@ func newXmuxRelease(client *xmuxClient) *xmuxRelease {
+ }
+ 
+ func (r *xmuxRelease) release() {
+-	if r == nil || r.client == nil {
++	if r == nil {
+ 		return
+ 	}
+-	r.once.Do(func() {
+-		r.client.addOpenUsage(-1)
+-	})
++	if r.client != nil {
++		r.once.Do(func() {
++			r.client.addOpenUsage(-1)
++		})
++	}
++	r.next.release() // ut: nil-safe, idempotent through its own once
+ }
+ 
+ // roundTrip issues a request over the held connection. packetConn keeps its
