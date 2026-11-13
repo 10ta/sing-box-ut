@@ -258,9 +258,15 @@ jobs:
           ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
         run: |
           set -euo pipefail
+          # The Android client ships upstream's own release.keystore; ours replaces it.
+          rm -f app/release.keystore
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/release.keystore
-            store_pass=$ANDROID_KEYSTORE_PASS; alias=$ANDROID_KEY_ALIAS; key_pass=${ANDROID_KEY_PASS:-$ANDROID_KEYSTORE_PASS}
+            store_pass=$ANDROID_KEYSTORE_PASS; key_pass=${ANDROID_KEY_PASS:-$ANDROID_KEYSTORE_PASS}
+            entries=$(keytool -list -keystore app/release.keystore -storepass "$store_pass") \
+              || { echo "::error::cannot open the keystore: check ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASS"; exit 1; }
+            alias=${ANDROID_KEY_ALIAS:-$(printf '%s\n' "$entries" | sed -n 's/^\([^,]*\),.*PrivateKeyEntry.*/\1/p' | sed -n 1p)}
+            [ -n "$alias" ] || { echo "::error::the keystore has no private key entry"; exit 1; }
             echo "signed=release" >> "$GITHUB_OUTPUT"
           else
             # No key configured: a throwaway key. Such an APK installs, but cannot

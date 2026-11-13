@@ -226,8 +226,11 @@ The interop test pins Xray (`XRAY_VERSION` in the workflow) because server defau
 | Secret | Required | Purpose |
 |---|---|---|
 | `ANDROID_KEYSTORE_BASE64` | ❌ | Base64 of the keystore that signs the APK. Without it each run uses a throwaway key |
-| `ANDROID_KEYSTORE_PASS`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASS` | ❌ | Keystore password, key alias, key password (defaults to the keystore password) |
+| `ANDROID_KEYSTORE_PASS` | with the keystore | Keystore password |
+| `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASS` | ❌ | Key alias (default: the first key in the keystore) and key password (default: the keystore password) |
 | `TG_BOT_TOKEN`, `TG_CHAT_ID` | ❌ | Telegram message when a build fails |
+
+`scripts/make-keystore.sh` creates a keystore with openssl and prints the two values to store. Keep the keystore: without it, later APKs cannot update installed ones.
 
 GitHub disables scheduled workflows after 60 days without repository activity; re-enable it on the Actions page.
 
@@ -259,6 +262,7 @@ flowchart LR
 │   ├── prepare.sh            # assembles the source tree
 │   ├── build.sh              # compiles sing-box from it
 │   ├── package-deb.sh        # packs a .deb
+│   ├── make-keystore.sh      # creates the APK signing keystore, once
 │   └── go-version.sh         # the Go version upstream builds with
 ├── test/interop/             # runs the client against a real Xray server
 ├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile

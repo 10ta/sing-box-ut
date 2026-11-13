@@ -226,8 +226,11 @@ env LX_REF=lx-1.15 scripts/prepare.sh work-next
 | Secret | 必填 | 用途 |
 |---|---|---|
 | `ANDROID_KEYSTORE_BASE64` | ❌ | APK 签名用的 keystore 的 Base64。不设的话每次运行用一次性密钥 |
-| `ANDROID_KEYSTORE_PASS`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS` | ❌ | keystore 密码、密钥别名、密钥密码（默认同 keystore 密码） |
+| `ANDROID_KEYSTORE_PASS` | 配了 keystore 就必填 | keystore 密码 |
+| `ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS` | ❌ | 密钥别名（默认取 keystore 里的第一个密钥）和密钥密码（默认同 keystore 密码） |
 | `TG_BOT_TOKEN`、`TG_CHAT_ID` | ❌ | 构建失败时发 Telegram 消息 |
+
+`scripts/make-keystore.sh` 用 openssl 生成 keystore，并打印要保存的两个值。keystore 要留好：丢了的话，以后的 APK 无法覆盖升级已安装的版本。
 
 仓库 60 天没有活动时，GitHub 会停用定时 workflow，需要到 Actions 页面重新启用。
 
@@ -259,6 +262,7 @@ flowchart LR
 │   ├── prepare.sh            # assembles the source tree
 │   ├── build.sh              # compiles sing-box from it
 │   ├── package-deb.sh        # packs a .deb
+│   ├── make-keystore.sh      # creates the APK signing keystore, once
 │   └── go-version.sh         # the Go version upstream builds with
 ├── test/interop/             # runs the client against a real Xray server
 ├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile
