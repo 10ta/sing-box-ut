@@ -29,7 +29,7 @@ Run from the repository root.
 - `patches/0001-upstream-seams.patch` — five upstream files: `constant/v2ray.go`, `option/v2ray_transport.go`, `option/vless.go`, `transport/v2ray/transport.go`, `protocol/vless/outbound.go`.
 - `patches/0002-lx-xhttp-download.patch` — the download endpoint, on the copied lx files (`transport/v2rayxhttp/`, `option/v2ray_xhttp*.go`). To change download behaviour, start in `transport/v2rayxhttp/download_ut.go`.
 - `overlay/cmd/internal/build_libbox/ut_tags.go` — appends `with_xhttp` to libbox's tags.
-- `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `fetch-cronet.sh` — prebuilt `libcronet.so` / `.dll` for the naive outbound. `make-keystore.sh` — one-time APK signing key. `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
+- `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `fetch-cronet.sh` — prebuilt `libcronet.so` / `.dll` for the naive outbound. `make-keystore.sh` — one-time APK signing key. `notify-telegram.sh` — the build summary message (`DRY_RUN=1` prints it). `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
 - `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
 - `test/naive-start.sh` — checks a build starts a naive outbound (compiled in, library loads).
 - `examples/` — complete sanitized configs. Keep the client in sync with the complete example in both READMEs; validate with `sing-box check` and `xray run -test` after replacing placeholders.
@@ -81,6 +81,7 @@ Run from the repository root.
 
 ## Gotchas
 
+- `download` takes transport options only. `uuid`, `encryption`, `flow` there are rejected as unknown fields: there is one VLESS handshake per connection, and both halves must reach the same Xray inbound.
 - Vision (`xtls-rprx-vision`) is not supported for now. Xray 26.11.9 rejects a flow-less client when its account, or a `flow` at the inbound `settings` level, asks for one.
 - `finalmask.quicParams` does apply to XHTTP over HTTP/3 in Xray; it is unsupported here because lx hard-codes `quic.Config`, not because QUIC is unused.
 - HTTP/3 with a `utls` block needs `common/tls/utls_client_std_lx.go` (in `lx-files.txt`); without it the config fails with "unsupported usage for uTLS".
@@ -93,6 +94,6 @@ Run from the repository root.
 
 ## Current focus
 
-- 2026-11-12: the build pipeline is written. Verified locally: `prepare.sh`, vet and tests, Linux amd64/arm64 binaries, `.deb` packaging, all six interop cases. First Actions run (2026-11-12): everything green and a prerelease published, except the Android job, which failed at the signing step (fixed). Second run: Gradle got as far as Kotlin compilation and failed on the client/libbox mismatch above (fixed by `android-client.sh`; a complete APK build has still never been seen).
-- Next: the user pushes and reports the first Actions run; fix what fails, Android first. Then test against the real two-server deployment behind Caddy.
-- Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches".
+- 2026-11-13: the pipeline works end to end on Actions: .deb, .tar.gz, Windows zip, Android APK, prerelease, Telegram summary. The user runs the Linux and Android builds against the real two-server deployment behind Caddy; Windows is untested.
+- Open: nothing blocking. Ideas: a separate Android application id, labelled logs for the download endpoint.
+- Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches"; lx pinned.

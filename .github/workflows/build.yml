@@ -4,6 +4,7 @@
 #   interop   the Linux amd64 binary against a real Xray server
 #   android   arm64-v8a APK (libbox + sing-box-for-android)
 #   release   a prerelease named <upstream tag>-ut with every artifact
+#   notify    a Telegram summary of every run that built something
 # Runs daily (builds only when upstream has a tag without a release here),
 # on pushes that change the build inputs, and on demand.
 name: build
@@ -153,7 +154,7 @@ jobs:
           scripts/build.sh work "bin/$exe" "$VERSION"
           # The naive outbound loads this library at run time.
           scripts/fetch-cronet.sh work "$GOOS" "$GOARCH" bin
-      - name: Package .deb
+      - name: Package .deb and .tar.gz
         if: matrix.os == 'linux'
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -162,6 +163,12 @@ jobs:
           mkdir -p dist
           # The package script appends +ut itself.
           scripts/package-deb.sh work bin/sing-box "${{ matrix.arch }}" "${VERSION%-ut}" "dist/sing-box_${VERSION}_linux_${{ matrix.arch }}.deb" bin/libcronet.so
+          # Plain archive, laid out like upstream's: one directory with the binary,
+          # the library the naive outbound loads from beside it, and the license.
+          name="sing-box-${VERSION}-linux-${{ matrix.arch }}"
+          mkdir "$name"
+          cp bin/sing-box bin/libcronet.so work/LICENSE "$name/"
+          tar -czf "dist/$name.tar.gz" --owner=0 --group=0 "$name"
       - name: Package .zip
         if: matrix.os == 'windows'
         env:
@@ -336,23 +343,27 @@ jobs:
           fi
 
   notify:
-    name: Notify on failure
+    name: Notify
     needs: [resolve, test, binaries, interop, android, release]
-    if: always() && contains(needs.*.result, 'failure')
+    # Every run that built something reports, success or not. A daily run that
+    # found nothing new stays silent.
+    if: always() && needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - name: Telegram
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          RESULTS: "test=${{ needs.test.result }} binaries=${{ needs.binaries.result }} interop=${{ needs.interop.result }} android=${{ needs.android.result }} release=${{ needs.release.result }}"
-        run: |
-          set -euo pipefail
-          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
-            echo "TG_BOT_TOKEN / TG_CHAT_ID are not set, skipping"; exit 0
-          fi
-          text="sing-box-ut build failed for ${{ needs.resolve.outputs.upstream_ref }}
-          $RESULTS
-          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -fsS -o /dev/null "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "text=${text}"
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+          LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+          EVENT: ${{ github.event_name }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_TEST: ${{ needs.test.result }}
+          R_BINARIES: ${{ needs.binaries.result }}
+          R_INTEROP: ${{ needs.interop.result }}
+          R_ANDROID: ${{ needs.android.result }}
+          R_RELEASE: ${{ needs.release.result }}
+        run: scripts/notify-telegram.sh

@@ -60,6 +60,7 @@ sing-box version 1.15.0-alpha.13-ut
 | 文件 | 用途 |
 |---|---|
 | `sing-box_<version>_linux_amd64.deb`、`…_arm64.deb` | Debian 和 Ubuntu。包名和文件布局与官方 `sing-box` 包相同，安装后替换官方包。包含 naive 出站需要的 `/usr/lib/libcronet.so` |
+| `sing-box-<version>-linux-amd64.tar.gz`、`…-arm64.tar.gz` | 任何带 glibc 的 Linux：`sing-box` 和 `libcronet.so` 在同一个目录里，免安装 |
 | `sing-box_<version>_windows_amd64.zip`、`…_arm64.zip` | Windows：`sing-box.exe`，以及 naive 出站需要的 `libcronet.dll`（两个文件放在同一个文件夹） |
 | `SFA-<version>-arm64-v8a.apk` | Android（sing-box for Android，内核换成打过补丁的） |
 
@@ -199,7 +200,9 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13 sing-box_amd64.deb
 | `finalmask.quicParams`（拥塞控制、接收窗口） | 不可配置。它只对 HTTP/3 生效；这里的 QUIC 用 quic-go 的默认值 |
 | `finalmask.udp`（noise） | 不支持 |
 | `testpre` | 不支持 |
-| `downloadSettings` 里的 `flow`、`encryption`、`testpre` | 不是传输层设置，直接去掉 |
+| `downloadSettings` 里的 `id`、`encryption`、`flow`、`testpre` | 去掉：`download` 遇到不认识的字段会报错。它们是 VLESS 的设置，不是传输层设置，Xray 在这个位置也会忽略它们。见下 |
+
+为什么 `download` 里没有 `uuid` 和 `encryption`：两台服务器承载的是同一条连接的两半，不是两条连接。客户端只在隧道里做一次 VLESS 握手（UUID、encryption），Xray 的 inbound 先按 session id 把上行和下行请求拼起来，再读这次握手。所以两台服务器最终必须通到同一个 Xray inbound，VLESS 设置也只有一组，写在出站本身。
 
 ## 🔄 更新与维护
 
@@ -228,7 +231,7 @@ env LX_REF=lx-1.15 scripts/prepare.sh work-next
 | `ANDROID_KEYSTORE_BASE64` | ❌ | APK 签名用的 keystore 的 Base64。不设的话每次运行用一次性密钥 |
 | `ANDROID_KEYSTORE_PASS` | 配了 keystore 就必填 | keystore 密码 |
 | `ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS` | ❌ | 密钥别名（默认取 keystore 里的第一个密钥）和密钥密码（默认同 keystore 密码） |
-| `TG_BOT_TOKEN`、`TG_CHAT_ID` | ❌ | 构建失败时发 Telegram 消息 |
+| `TG_BOT_TOKEN`、`TG_CHAT_ID` | ❌ | 每次构建后发 Telegram 汇总，成功失败都发 |
 
 `scripts/make-keystore.sh` 用 openssl 生成 keystore，并打印要保存的两个值。keystore 要留好：丢了的话，以后的 APK 无法覆盖升级已安装的版本。
 
@@ -289,7 +292,7 @@ go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checkli
 
 - 暂时不支持 Vision flow，也不能调 QUIC 的拥塞控制和窗口，见[配置](#-配置)。
 - Linux 和 Windows 的构建带上游的全部功能，包括 naive 出站。自己手动编出的二进制要启动 naive 出站，需要把 `libcronet.so` 放在它旁边、`LD_LIBRARY_PATH` 里或 `/usr/lib` 下（`scripts/fetch-cronet.sh work linux amd64 .`）。
-- 只在 Linux amd64 上测过，并且是 Xray 自己做 TLS 终结。没测过：Xray 前面放 Caddy、CDN、下行端点用 REALITY、经 detour 拨号。Windows 和 Android 的构建产物本文档的作者没有实际运行过。
+- 自动化测试跑在 Linux amd64 上，对接的是自己做 TLS 终结的 Xray。发布的 Linux 和 Android 构建也在真实的双服务器部署（前面是 Caddy）上跑通了。没测过：CDN、下行端点用 REALITY、经 detour 拨号、Windows 构建。
 - 只有客户端。sing-box-lx 没有 XHTTP 服务端。
 
 ## 🔀 上游与差异

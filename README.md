@@ -60,6 +60,7 @@ Prebuilt files are attached to each [release](https://github.com/10ta/sing-box-u
 | File | For |
 |---|---|
 | `sing-box_<version>_linux_amd64.deb`, `…_arm64.deb` | Debian and Ubuntu. Same package name and layout as the official `sing-box` package, which it replaces. Includes `/usr/lib/libcronet.so` for the naive outbound |
+| `sing-box-<version>-linux-amd64.tar.gz`, `…-arm64.tar.gz` | Any Linux with glibc: `sing-box` and `libcronet.so` in one directory, no installation |
 | `sing-box_<version>_windows_amd64.zip`, `…_arm64.zip` | Windows: `sing-box.exe`, plus `libcronet.dll` for the naive outbound (keep both in one folder) |
 | `SFA-<version>-arm64-v8a.apk` | Android (sing-box for Android with the patched core) |
 
@@ -199,7 +200,9 @@ Set `alpn` to `["h3"]` in `tls` and in `download.tls`. The two halves are indepe
 | `finalmask.quicParams` (congestion control, receive windows) | Not configurable. It applies to HTTP/3 only; here QUIC runs with quic-go defaults |
 | `finalmask.udp` (noise) | Not supported |
 | `testpre` | Not supported |
-| `flow`, `encryption`, `testpre` inside `downloadSettings` | Not transport settings. Drop them |
+| `id`, `encryption`, `flow`, `testpre` inside `downloadSettings` | Drop them: `download` rejects unknown fields. They are VLESS settings, not transport settings, and Xray ignores them there too. See below |
+
+Why `download` has no `uuid` or `encryption`: the two servers carry the two halves of one connection, not two connections. The client makes a single VLESS handshake (UUID, encryption) inside the tunnel, and the Xray inbound joins the upload and download requests by session id before it reads that handshake. So both servers must lead to the same Xray inbound, and there is only one set of VLESS settings, on the outbound itself.
 
 ## 🔄 Update & Maintenance
 
@@ -228,7 +231,7 @@ The interop test pins Xray (`XRAY_VERSION` in the workflow) because server defau
 | `ANDROID_KEYSTORE_BASE64` | ❌ | Base64 of the keystore that signs the APK. Without it each run uses a throwaway key |
 | `ANDROID_KEYSTORE_PASS` | with the keystore | Keystore password |
 | `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASS` | ❌ | Key alias (default: the first key in the keystore) and key password (default: the keystore password) |
-| `TG_BOT_TOKEN`, `TG_CHAT_ID` | ❌ | Telegram message when a build fails |
+| `TG_BOT_TOKEN`, `TG_CHAT_ID` | ❌ | Telegram summary of every build, successful or not |
 
 `scripts/make-keystore.sh` creates a keystore with openssl and prints the two values to store. Keep the keystore: without it, later APKs cannot update installed ones.
 
@@ -289,7 +292,7 @@ Both test packages report `ok`. To change the download logic, edit the files in 
 
 - No Vision flow for now, and no control over QUIC congestion or windows, see [Configuration](#-configuration).
 - The Linux and Windows builds carry upstream's full feature set, naive outbound included. A binary built by hand needs `libcronet.so` next to it, in `LD_LIBRARY_PATH` or in `/usr/lib` to start a naive outbound (`scripts/fetch-cronet.sh work linux amd64 .`).
-- Tested on Linux amd64 against Xray terminating TLS itself. Not tested: Caddy in front of Xray, a CDN, REALITY on the download endpoint, dialing through a detour. The Windows and Android builds have not been run by the author of this document.
+- The automated tests run on Linux amd64 against Xray terminating TLS itself. The released Linux and Android builds also work against a real two-server deployment behind Caddy. Not tested: a CDN, REALITY on the download endpoint, dialing through a detour, the Windows builds.
 - Client only. sing-box-lx has no XHTTP server.
 
 ## 🔀 Upstream & Differences
