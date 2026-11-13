@@ -59,8 +59,8 @@ sing-box version 1.15.0-alpha.13-ut
 
 | 文件 | 用途 |
 |---|---|
-| `sing-box_<version>_linux_amd64.deb`、`…_arm64.deb` | Debian 和 Ubuntu。包名和文件布局与官方 `sing-box` 包相同，安装后替换官方包 |
-| `sing-box_<version>_windows_amd64.zip`、`…_arm64.zip` | Windows：`sing-box.exe` |
+| `sing-box_<version>_linux_amd64.deb`、`…_arm64.deb` | Debian 和 Ubuntu。包名和文件布局与官方 `sing-box` 包相同，安装后替换官方包。包含 naive 出站需要的 `/usr/lib/libcronet.so` |
+| `sing-box_<version>_windows_amd64.zip`、`…_arm64.zip` | Windows：`sing-box.exe`，以及 naive 出站需要的 `libcronet.dll`（两个文件放在同一个文件夹） |
 | `SFA-<version>-arm64-v8a.apk` | Android（sing-box for Android，内核换成打过补丁的） |
 
 Android 应用沿用官方的 application id，所以不能和官方 SFA 同时安装，两者之间切换要先卸载。文件名以 `-UNSIGNED-KEY` 结尾的 APK 是用一次性密钥签的，不能覆盖升级。
@@ -261,6 +261,7 @@ flowchart LR
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
 │   ├── build.sh              # compiles sing-box from it
+│   ├── fetch-cronet.sh       # downloads the library the naive outbound needs
 │   ├── package-deb.sh        # packs a .deb
 │   ├── android-client.sh     # checks out the matching Android client
 │   ├── make-keystore.sh      # creates the APK signing keystore, once
@@ -287,7 +288,7 @@ go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checkli
 ## 🚧 局限与路线
 
 - 暂时不支持 Vision flow，也不能调 QUIC 的拥塞控制和窗口，见[配置](#-配置)。
-- Linux 和 Windows 的构建用上游的默认标签，不含 naive 出站。
+- Linux 和 Windows 的构建带上游的全部功能，包括 naive 出站。自己手动编出的二进制要启动 naive 出站，需要把 `libcronet.so` 放在它旁边、`LD_LIBRARY_PATH` 里或 `/usr/lib` 下（`scripts/fetch-cronet.sh work linux amd64 .`）。
 - 只在 Linux amd64 上测过，并且是 Xray 自己做 TLS 终结。没测过：Xray 前面放 Caddy、CDN、下行端点用 REALITY、经 detour 拨号。Windows 和 Android 的构建产物本文档的作者没有实际运行过。
 - 只有客户端。sing-box-lx 没有 XHTTP 服务端。
 

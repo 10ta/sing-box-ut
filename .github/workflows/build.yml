@@ -151,6 +151,8 @@ jobs:
           set -euo pipefail
           exe=sing-box; [ "$GOOS" = windows ] && exe=sing-box.exe
           scripts/build.sh work "bin/$exe" "$VERSION"
+          # The naive outbound loads this library at run time.
+          scripts/fetch-cronet.sh work "$GOOS" "$GOARCH" bin
       - name: Package .deb
         if: matrix.os == 'linux'
         env:
@@ -159,7 +161,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           # The package script appends +ut itself.
-          scripts/package-deb.sh work bin/sing-box "${{ matrix.arch }}" "${VERSION%-ut}" "dist/sing-box_${VERSION}_linux_${{ matrix.arch }}.deb"
+          scripts/package-deb.sh work bin/sing-box "${{ matrix.arch }}" "${VERSION%-ut}" "dist/sing-box_${VERSION}_linux_${{ matrix.arch }}.deb" bin/libcronet.so
       - name: Package .zip
         if: matrix.os == 'windows'
         env:
@@ -168,7 +170,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp work/LICENSE bin/LICENSE
-          (cd bin && zip -q "../dist/sing-box_${VERSION}_windows_${{ matrix.arch }}.zip" sing-box.exe LICENSE)
+          (cd bin && zip -q "../dist/sing-box_${VERSION}_windows_${{ matrix.arch }}.zip" sing-box.exe libcronet.dll LICENSE)
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os }}-${{ matrix.arch }}
@@ -200,6 +202,8 @@ jobs:
           xray-bin/xray version | head -1 | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Interop
         run: test/interop/run.sh pkg/usr/bin/sing-box xray-bin/xray
+      - name: Naive outbound starts
+        run: test/naive-start.sh pkg/usr/bin/sing-box pkg/usr/lib/libcronet.so
 
   android:
     name: Android arm64-v8a

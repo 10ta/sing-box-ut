@@ -120,3 +120,4 @@
 - 定时任务每天一次，只在"上游最新 tag 还没有对应 release"时构建。推送改到构建输入时也会构建并覆盖同名 release 的文件。
 - **Android 客户端版本（2026-11-12，Actions 实测）**：上游 tag 里 `clients/android` 钉的提交只对稳定版有效。alpha tag 钉的是旧客户端（alpha.13 钉的是 `Bump version 1.14.4`），没有实现新 libbox 接口，Kotlin 编译报 `does not implement abstract members`。上游自己编 alpha 时用的是客户端的 `dev` 分支。`dev` 上每个 sing-box 版本有一个 `Bump version <版本>` 提交，`scripts/android-client.sh` 就取这个提交，找不到才退回钉住的提交。
 - 客户端仓库自带上游的 `app/release.keystore`，要先删掉再放我们的，否则 `keytool` 报密码错误。
+- **naive 出站（2026-11-13）**：用户的配置里有 naive 出站，最初的构建用的是不含 naive 的标签集，启动直接 FATAL。改为上游的 purego 方案：Linux 用 `DEFAULT_BUILD_TAGS` + `with_purego`，Windows 用 `DEFAULT_BUILD_TAGS_WINDOWS`，仍然是纯 Go（`CGO_ENABLED=0`），运行时加载预编译的 `libcronet.so` / `libcronet.dll`（取自 cronet-go 仓库，版本由上游的 `.github/CRONET_GO_VERSION` 决定）。查找顺序：可执行文件所在目录、`LD_LIBRARY_PATH`、`/usr/local/lib`、`/usr/lib`。deb 装到 `/usr/lib/libcronet.so`。没有照搬上游官方 deb 用的 musl + 静态链接 cronet，那个要 Chromium 工具链。上面"不含 naive"的说法作废。

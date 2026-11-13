@@ -29,8 +29,9 @@ Run from the repository root.
 - `patches/0001-upstream-seams.patch` — five upstream files: `constant/v2ray.go`, `option/v2ray_transport.go`, `option/vless.go`, `transport/v2ray/transport.go`, `protocol/vless/outbound.go`.
 - `patches/0002-lx-xhttp-download.patch` — the download endpoint, on the copied lx files (`transport/v2rayxhttp/`, `option/v2ray_xhttp*.go`). To change download behaviour, start in `transport/v2rayxhttp/download_ut.go`.
 - `overlay/cmd/internal/build_libbox/ut_tags.go` — appends `with_xhttp` to libbox's tags.
-- `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `make-keystore.sh` — one-time APK signing key. `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
+- `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `fetch-cronet.sh` — prebuilt `libcronet.so` / `.dll` for the naive outbound. `make-keystore.sh` — one-time APK signing key. `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
 - `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
+- `test/naive-start.sh` — checks a build starts a naive outbound (compiled in, library loads).
 - `examples/` — complete sanitized configs. Keep the client in sync with the complete example in both READMEs; validate with `sing-box check` and `xray run -test` after replacing placeholders.
 - `.github/workflows/build.yml` — resolve, test, binaries, interop, android, release, notify.
 
@@ -47,6 +48,7 @@ Run from the repository root.
 - Nothing is inherited from the upload side except the dialer and the session id (same as Xray).
 - Mode with `download`: `stream-one` is an error; `auto` → `packet-up`, or `stream-up` under REALITY. Resolved before the placement checks.
 - `xmuxRelease.next` chains the download connection's release; every release path must stay idempotent and release both.
+- Build tags: Linux = upstream `DEFAULT_BUILD_TAGS` + `with_purego`, Windows = `DEFAULT_BUILD_TAGS_WINDOWS`, both + `with_xhttp`, `CGO_ENABLED=0`. The naive outbound is compiled in and loads Cronet at run time: next to the binary, `LD_LIBRARY_PATH`, `/usr/local/lib`, `/usr/lib`. The .deb installs `/usr/lib/libcronet.so`; the Windows zip carries `libcronet.dll`.
 - `prepare.sh` stages everything before the last patch, so `git diff` in the tree is exactly that patch. It never commits: libbox reads its version from `git describe`.
 - Package version `X~alpha.N+ut` sorts above the official package of the same tag and below the next one.
 

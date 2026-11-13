@@ -59,8 +59,8 @@ Prebuilt files are attached to each [release](https://github.com/10ta/sing-box-u
 
 | File | For |
 |---|---|
-| `sing-box_<version>_linux_amd64.deb`, `…_arm64.deb` | Debian and Ubuntu. Same package name and layout as the official `sing-box` package, which it replaces |
-| `sing-box_<version>_windows_amd64.zip`, `…_arm64.zip` | Windows: `sing-box.exe` |
+| `sing-box_<version>_linux_amd64.deb`, `…_arm64.deb` | Debian and Ubuntu. Same package name and layout as the official `sing-box` package, which it replaces. Includes `/usr/lib/libcronet.so` for the naive outbound |
+| `sing-box_<version>_windows_amd64.zip`, `…_arm64.zip` | Windows: `sing-box.exe`, plus `libcronet.dll` for the naive outbound (keep both in one folder) |
 | `SFA-<version>-arm64-v8a.apk` | Android (sing-box for Android with the patched core) |
 
 The Android app keeps the official application id, so it cannot be installed next to the official SFA, and switching between the two needs an uninstall first. An APK whose name ends in `-UNSIGNED-KEY` was signed with a throwaway key and cannot be updated in place.
@@ -261,6 +261,7 @@ flowchart LR
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
 │   ├── build.sh              # compiles sing-box from it
+│   ├── fetch-cronet.sh       # downloads the library the naive outbound needs
 │   ├── package-deb.sh        # packs a .deb
 │   ├── android-client.sh     # checks out the matching Android client
 │   ├── make-keystore.sh      # creates the APK signing keystore, once
@@ -287,7 +288,7 @@ Both test packages report `ok`. To change the download logic, edit the files in 
 ## 🚧 Limitations & Roadmap
 
 - No Vision flow for now, and no control over QUIC congestion or windows, see [Configuration](#-configuration).
-- The Linux and Windows builds use upstream's default tags without the naive outbound.
+- The Linux and Windows builds carry upstream's full feature set, naive outbound included. A binary built by hand needs `libcronet.so` next to it, in `LD_LIBRARY_PATH` or in `/usr/lib` to start a naive outbound (`scripts/fetch-cronet.sh work linux amd64 .`).
 - Tested on Linux amd64 against Xray terminating TLS itself. Not tested: Caddy in front of Xray, a CDN, REALITY on the download endpoint, dialing through a detour. The Windows and Android builds have not been run by the author of this document.
 - Client only. sing-box-lx has no XHTTP server.
 
