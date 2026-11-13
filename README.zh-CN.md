@@ -262,6 +262,7 @@ flowchart LR
 │   ├── prepare.sh            # assembles the source tree
 │   ├── build.sh              # compiles sing-box from it
 │   ├── package-deb.sh        # packs a .deb
+│   ├── android-client.sh     # checks out the matching Android client
 │   ├── make-keystore.sh      # creates the APK signing keystore, once
 │   └── go-version.sh         # the Go version upstream builds with
 ├── test/interop/             # runs the client against a real Xray server

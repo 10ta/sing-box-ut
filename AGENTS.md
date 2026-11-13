@@ -29,7 +29,7 @@ Run from the repository root.
 - `patches/0001-upstream-seams.patch` — five upstream files: `constant/v2ray.go`, `option/v2ray_transport.go`, `option/vless.go`, `transport/v2ray/transport.go`, `protocol/vless/outbound.go`.
 - `patches/0002-lx-xhttp-download.patch` — the download endpoint, on the copied lx files (`transport/v2rayxhttp/`, `option/v2ray_xhttp*.go`). To change download behaviour, start in `transport/v2rayxhttp/download_ut.go`.
 - `overlay/cmd/internal/build_libbox/ut_tags.go` — appends `with_xhttp` to libbox's tags.
-- `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `make-keystore.sh` — one-time APK signing key.
+- `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `make-keystore.sh` — one-time APK signing key. `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
 - `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
 - `examples/` — complete sanitized configs. Keep the client in sync with the complete example in both READMEs; validate with `sing-box check` and `xray run -test` after replacing placeholders.
 - `.github/workflows/build.yml` — resolve, test, binaries, interop, android, release, notify.
@@ -85,11 +85,12 @@ Run from the repository root.
 - Xray 26.11.9: `freedom` blocks loopback targets unless `finalRules` allows them; the server's default `xPaddingBytes` is 100-1000 and a client range outside it gets HTTP 400.
 - `curl --socks5-hostname` skips the proxy when `NO_PROXY` lists `127.0.0.1`; the test passes `--noproxy ''`.
 - `git ls-remote | head -1` under `set -o pipefail` dies with SIGPIPE; the scripts use `sed -n 1p` forms.
+- Android: the submodule commit upstream pins is only right for stable tags. For an alpha tag it is an older client that does not implement the new libbox interface (Kotlin: "does not implement abstract members"). Upstream builds alphas from the client's `dev` branch; `android-client.sh` picks the dev commit titled `Bump version <version>`.
 - Android: the client repository ships upstream's own `app/release.keystore`; delete it before writing ours, or `keytool -genkeypair` fails with "Keystore was tampered with". Java must be 17; the app expects `app/libs/libbox.aar` and `app/release.keystore`, and reads signing values from `local.properties`. The APK keeps upstream's application id.
 - Where proxy.golang.org is unreachable, see "踩过的坑" in [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md) for a GitHub-only way to build. There, Windows binaries and the `with_openvpn,with_openconnect` tags cannot be built.
 
 ## Current focus
 
-- 2026-11-12: the build pipeline is written. Verified locally: `prepare.sh`, vet and tests, Linux amd64/arm64 binaries, `.deb` packaging, all six interop cases. First Actions run (2026-11-12): everything green and a prerelease published, except the Android job, which failed at the signing step (fixed; the Gradle step has still never run).
+- 2026-11-12: the build pipeline is written. Verified locally: `prepare.sh`, vet and tests, Linux amd64/arm64 binaries, `.deb` packaging, all six interop cases. First Actions run (2026-11-12): everything green and a prerelease published, except the Android job, which failed at the signing step (fixed). Second run: Gradle got as far as Kotlin compilation and failed on the client/libbox mismatch above (fixed by `android-client.sh`; a complete APK build has still never been seen).
 - Next: the user pushes and reports the first Actions run; fix what fails, Android first. Then test against the real two-server deployment behind Caddy.
 - Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches".

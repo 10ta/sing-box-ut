@@ -215,12 +215,7 @@ jobs:
           LX_REF: ${{ needs.resolve.outputs.lx_ref }}
         run: scripts/prepare.sh work
       - name: Fetch the Android client
-        working-directory: work
-        run: |
-          set -euo pipefail
-          # The commit upstream pins for this tag.
-          git submodule update --init --depth 1 clients/android
-          git -C clients/android submodule update --init --recursive --depth 1
+        run: scripts/android-client.sh work
       - name: Go version
         id: go
         run: scripts/go-version.sh work >> "$GITHUB_OUTPUT"

@@ -118,3 +118,5 @@
 - Android：只编 arm64 的 libbox，`with_xhttp` 通过 overlay 里的 `ut_tags.go` 追加；用上游 tag 钉住的 SFA 提交；`assembleOtherRelease` 后取 arm64-v8a 的 APK。没配签名 secrets 时用一次性密钥，文件名带 `-UNSIGNED-KEY`。applicationId 没改，和官方 SFA 不能共存。
 - 版本号：二进制是 `<tag>-ut`；libbox 的版本来自 `git describe`，是上游原版本号，所以 `prepare.sh` 只暂存不提交。
 - 定时任务每天一次，只在"上游最新 tag 还没有对应 release"时构建。推送改到构建输入时也会构建并覆盖同名 release 的文件。
+- **Android 客户端版本（2026-11-12，Actions 实测）**：上游 tag 里 `clients/android` 钉的提交只对稳定版有效。alpha tag 钉的是旧客户端（alpha.13 钉的是 `Bump version 1.14.4`），没有实现新 libbox 接口，Kotlin 编译报 `does not implement abstract members`。上游自己编 alpha 时用的是客户端的 `dev` 分支。`dev` 上每个 sing-box 版本有一个 `Bump version <版本>` 提交，`scripts/android-client.sh` 就取这个提交，找不到才退回钉住的提交。
+- 客户端仓库自带上游的 `app/release.keystore`，要先删掉再放我们的，否则 `keytool` 报密码错误。
