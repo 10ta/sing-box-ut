@@ -1,0 +1,190 @@
+diff --git a/constant/v2ray.go b/constant/v2ray.go
+index c3089a6c..997a199f 100644
+--- a/constant/v2ray.go
++++ b/constant/v2ray.go
+@@ -6,4 +6,6 @@ const (
+ 	V2RayTransportTypeQUIC        = "quic"
+ 	V2RayTransportTypeGRPC        = "grpc"
+ 	V2RayTransportTypeHTTPUpgrade = "httpupgrade"
++	// lx: XHTTP transport (Xray-compatible), registered behind build tag with_xhttp. See SPECS/TASKS/002.
++	V2RayTransportTypeXHTTP = "xhttp"
+ )
+diff --git a/option/v2ray_transport.go b/option/v2ray_transport.go
+index 8788151e..af8d6255 100644
+--- a/option/v2ray_transport.go
++++ b/option/v2ray_transport.go
+@@ -18,6 +18,9 @@ type _V2RayTransportOptions struct {
+ 	QUICOptions        V2RayQUICOptions        `json:"-"`
+ 	GRPCOptions        V2RayGRPCOptions        `json:"-"`
+ 	HTTPUpgradeOptions V2RayHTTPUpgradeOptions `json:"-"`
++	// lx:begin xhttp
++	XHTTPOptions V2RayXHTTPOptions `json:"-"`
++	// lx:end xhttp
+ }
+ 
+ type V2RayTransportOptions _V2RayTransportOptions
+@@ -35,6 +38,10 @@ func (o V2RayTransportOptions) MarshalJSON() ([]byte, error) {
+ 		v = o.GRPCOptions
+ 	case C.V2RayTransportTypeHTTPUpgrade:
+ 		v = o.HTTPUpgradeOptions
++	// lx:begin xhttp
++	case C.V2RayTransportTypeXHTTP:
++		v = o.XHTTPOptions
++	// lx:end xhttp
+ 	case "":
+ 		return nil, E.New("missing transport type")
+ 	default:
+@@ -60,6 +67,10 @@ func (o *V2RayTransportOptions) UnmarshalJSON(bytes []byte) error {
+ 		v = &o.GRPCOptions
+ 	case C.V2RayTransportTypeHTTPUpgrade:
+ 		v = &o.HTTPUpgradeOptions
++	// lx:begin xhttp
++	case C.V2RayTransportTypeXHTTP:
++		v = &o.XHTTPOptions
++	// lx:end xhttp
+ 	default:
+ 		return E.New("unknown transport type: " + o.Type)
+ 	}
+@@ -78,6 +89,9 @@ func (o V2RayTransportOptions) DescribeSchema(builder schema.Builder) (*schema.N
+ 			{Value: C.V2RayTransportTypeQUIC, StructType: reflect.TypeFor[V2RayQUICOptions]()},
+ 			{Value: C.V2RayTransportTypeGRPC, StructType: reflect.TypeFor[V2RayGRPCOptions]()},
+ 			{Value: C.V2RayTransportTypeHTTPUpgrade, StructType: reflect.TypeFor[V2RayHTTPUpgradeOptions]()},
++			// lx:begin xhttp
++			{Value: C.V2RayTransportTypeXHTTP, StructType: reflect.TypeFor[V2RayXHTTPOptions]()},
++			// lx:end xhttp
+ 		}, nil)
+ 	})
+ }
+diff --git a/option/vless.go b/option/vless.go
+index 1f13537d..c4176eed 100644
+--- a/option/vless.go
++++ b/option/vless.go
+@@ -17,9 +17,14 @@ type VLESSUser struct {
+ type VLESSOutboundOptions struct {
+ 	DialerOptions
+ 	ServerOptions
+-	UUID    string      `json:"uuid"`
+-	Flow    string      `json:"flow,omitempty"`
+-	Network NetworkList `json:"network,omitempty"`
++	UUID string `json:"uuid"`
++	Flow string `json:"flow,omitempty"`
++	// Encryption enables the VLESS post-quantum encryption layer, which lives
++	// inside VLESS beneath the transport and independent of TLS. Spec string:
++	// "mlkem768x25519plus.<native|xorpub|random>.<0rtt|1rtt>[.<padding>].<key>…".
++	// Empty or "none" leaves the layer off (lx: SPEC 032).
++	Encryption string      `json:"encryption,omitempty"`
++	Network    NetworkList `json:"network,omitempty"`
+ 	OutboundTLSOptionsContainer
+ 	Multiplex      *OutboundMultiplexOptions `json:"multiplex,omitempty"`
+ 	Transport      *V2RayTransportOptions    `json:"transport,omitempty"`
+diff --git a/protocol/vless/outbound.go b/protocol/vless/outbound.go
+index c0ece0a2..c6a41e8e 100644
+--- a/protocol/vless/outbound.go
++++ b/protocol/vless/outbound.go
+@@ -12,6 +12,7 @@ import (
+ 	C "github.com/sagernet/sing-box/constant"
+ 	"github.com/sagernet/sing-box/log"
+ 	"github.com/sagernet/sing-box/option"
++	"github.com/sagernet/sing-box/protocol/vless/encryption"
+ 	"github.com/sagernet/sing-box/transport/v2ray"
+ 	"github.com/sagernet/sing-vmess/packetaddr"
+ 	"github.com/sagernet/sing-vmess/vless"
+@@ -45,6 +46,9 @@ type Outbound struct {
+ 	transport       adapter.V2RayClientTransport
+ 	packetAddr      bool
+ 	xudp            bool
++	// encryption is the VLESS post-quantum layer, nil unless `encryption` is
++	// configured. It wraps the dialed conn beneath the vless client (lx: SPEC 032).
++	encryption *encryption.ClientInstance
+ }
+ 
+ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VLESSOutboundOptions) (adapter.Outbound, error) {
+@@ -71,7 +75,14 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		outbound.tlsDialer = tls.NewDialer(outboundDialer, outbound.tlsConfig)
++		// lx:begin tls-disabled-dialer
++		// NewClientWithOptions returns (nil, nil) for `"tls": {"enabled": false}`;
++		// an unconditional NewDialer here wraps that nil config and SIGSEGVs on the
++		// first handshake (SPEC 045). Same guard as vmess.
++		if outbound.tlsConfig != nil {
++			outbound.tlsDialer = tls.NewDialer(outboundDialer, outbound.tlsConfig)
++		}
++		// lx:end tls-disabled-dialer
+ 	}
+ 	if options.Transport != nil {
+ 		outbound.transport, err = v2ray.NewClientTransport(ctx, outbound.dialer, outbound.serverAddr, common.PtrValueOrDefault(options.Transport), outbound.tlsConfig)
+@@ -92,6 +103,18 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
+ 			return nil, E.New("unknown packet encoding: ", *options.PacketEncoding)
+ 		}
+ 	}
++	// lx: SPEC 032 — set up the post-quantum encryption layer before the vless
++	// client, which is unaware of it.
++	if options.Encryption != "" && options.Encryption != "none" {
++		encryptionConfig, err := parseClientEncryption(options.Encryption)
++		if err != nil {
++			return nil, E.Cause(err, "parse encryption")
++		}
++		outbound.encryption = &encryption.ClientInstance{}
++		if err := outbound.encryption.Init(encryptionConfig.keys, encryptionConfig.xorMode, encryptionConfig.seconds, encryptionConfig.padding); err != nil {
++			return nil, E.Cause(err, "initialize encryption")
++		}
++	}
+ 	outbound.client, err = vless.NewClient(options.UUID, options.Flow, logger)
+ 	if err != nil {
+ 		return nil, err
+@@ -201,6 +224,10 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	conn, err = h.wrapEncryption(ctx, conn)
++	if err != nil {
++		return nil, err
++	}
+ 	switch N.NetworkName(network) {
+ 	case N.NetworkTCP:
+ 		h.logger.InfoContext(ctx, "outbound connection to ", destination)
+@@ -244,6 +271,10 @@ func (h *vlessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr)
+ 		common.Close(conn)
+ 		return nil, err
+ 	}
++	conn, err = h.wrapEncryption(ctx, conn)
++	if err != nil {
++		return nil, err
++	}
+ 	if h.xudp {
+ 		return h.client.DialEarlyXUDPPacketConn(conn, destination)
+ 	} else if h.packetAddr {
+diff --git a/transport/v2ray/transport.go b/transport/v2ray/transport.go
+index ab52f55e..74f0958a 100644
+--- a/transport/v2ray/transport.go
++++ b/transport/v2ray/transport.go
+@@ -48,21 +48,12 @@ func NewClientTransport(ctx context.Context, dialer N.Dialer, serverAddr M.Socks
+ 	if options.Type == "" {
+ 		return nil, nil
+ 	}
+-	switch options.Type {
+-	case C.V2RayTransportTypeHTTP:
+-		return v2rayhttp.NewClient(ctx, dialer, serverAddr, options.HTTPOptions, tlsConfig)
+-	case C.V2RayTransportTypeGRPC:
+-		return NewGRPCClient(ctx, dialer, serverAddr, options.GRPCOptions, tlsConfig)
+-	case C.V2RayTransportTypeWebsocket:
+-		return v2raywebsocket.NewClient(ctx, dialer, serverAddr, options.WebsocketOptions, tlsConfig)
+-	case C.V2RayTransportTypeQUIC:
+-		if tlsConfig == nil {
+-			return nil, C.ErrTLSRequired
+-		}
+-		return NewQUICClient(ctx, dialer, serverAddr, options.QUICOptions, tlsConfig)
+-	case C.V2RayTransportTypeHTTPUpgrade:
+-		return v2rayhttpupgrade.NewClient(ctx, dialer, serverAddr, options.HTTPUpgradeOptions, tlsConfig)
+-	default:
++	// lx:begin xhttp — switch replaced by the client transport registry (registry.go);
++	// built-in types are registered there, downstream types (xhttp) register via init().
++	constructor, loaded := lookupClientTransport(options.Type)
++	if !loaded {
+ 		return nil, E.New("unknown transport type: " + options.Type)
+ 	}
++	return constructor(ctx, dialer, serverAddr, options, tlsConfig)
++	// lx:end xhttp
+ }

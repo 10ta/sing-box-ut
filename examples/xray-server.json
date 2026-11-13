@@ -7,10 +7,7 @@
       "port": 6501,
       "protocol": "vless",
       "settings": {
-        "clients": [
-          { "id": "<UUID_FOR_SING_BOX_UT>" },
-          { "id": "<UUID_FOR_XRAY_CLIENTS>", "flow": "xtls-rprx-vision" }
-        ],
+        "clients": [{ "id": "<UUID>" }],
         "decryption": "<VLESS_DECRYPTION>"
       },
       "streamSettings": {

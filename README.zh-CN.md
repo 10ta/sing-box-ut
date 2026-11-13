@@ -4,7 +4,7 @@
 
 一组补丁，让 sing-box 原生支持 VLESS + XHTTP 客户端和上下行分离，客户端不再需要 xray-core。
 
-[![verify-download](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml)
+[![build](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml)
 
 目前已经实现的功能，每一项都对真实的 Xray 服务端测过：
 
@@ -16,6 +16,7 @@
 
 - [为什么是 sing-box-ut？](#-为什么是-sing-box-ut)
 - [快速开始](#-快速开始)
+- [安装](#-安装)
 - [使用](#-使用)
 - [配置](#-配置)
 - [更新与维护](#-更新与维护)
@@ -29,38 +30,44 @@
 
 ## 💡 为什么是 sing-box-ut？
 
-Xray 的 XHTTP 可以把上行发到一台服务器、下行发到另一台（`downloadSettings`）。没有哪个 sing-box 构建支持这一点，所以需要它的 sing-box 客户端只能在旁边再跑一个 xray-core。本仓库把缺的这一块做成补丁，打在 [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 上，它已经有 XHTTP 客户端和 VLESS encryption。
+Xray 的 XHTTP 可以把上行发到一台服务器、下行发到另一台（`downloadSettings`）。没有哪个 sing-box 构建支持这一点，所以需要它的 sing-box 客户端只能在旁边再跑一个 xray-core。本仓库用最新的 sing-box alpha，加上 [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 的 XHTTP 客户端和 VLESS encryption，再补上缺的上下行分离，构建出成品。
 
-- ✅ 适合：sing-box 客户端通过 VLESS + XHTTP 连接 Xray 服务端，并且用了 `downloadSettings`。
-- ❌ 不适合：想要现成的二进制（目前不发布，见[局限与路线](#-局限与路线)）；需要 XHTTP 服务端（只有客户端，服务端继续用 Xray）；想在 `stream-one` 模式下分离下行。
+- ✅ 适合：sing-box 客户端通过 VLESS + XHTTP 连接 Xray 服务端，用不用 `downloadSettings` 都可以。
+- ❌ 不适合：需要 Vision flow（暂时不支持 `xtls-rprx-vision`）；需要 XHTTP 服务端（只有客户端，服务端继续用 Xray）；想在 `stream-one` 模式下分离下行。
 
 ## 🚀 快速开始
 
-需要 Linux 上的 git 和 Go 1.26 或更新版本。
+在 Linux 上从源码构建。需要 git、bash，以及上游构建所用的 Go 版本（`v1.15.0-alpha.13` 对应 1.26.10）。
 
 ```bash
 git clone https://github.com/10ta/sing-box-ut
 cd sing-box-ut
-git clone --depth 1 -b lx-1.15 --recurse-submodules --shallow-submodules https://github.com/Leadaxe/sing-box-lx lx
-git -C lx apply ../patches/0002-lx-xhttp-download.patch
-cd lx
-env CGO_ENABLED=0 go build -trimpath -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" -ldflags "-s -w -checklinkname=0" -o ../sing-box ./cmd/sing-box
-cd ..
+scripts/prepare.sh work
+scripts/build.sh work sing-box
 ./sing-box version
 ```
 
-最后一条命令会打印构建标签，其中必须有 `with_xhttp`：
+`prepare.sh` 用最新的 sing-box tag 在 `work/` 里拼出源码。最后一条命令打印版本号，以 `-ut` 结尾：
 
 ```text
-sing-box version unknown
-
-Environment: go1.26.6 linux/amd64
-Tags: with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0
+sing-box version 1.15.0-alpha.13-ut
 ```
+
+## 📦 安装
+
+编译好的文件挂在每个 [release](https://github.com/10ta/sing-box-ut/releases) 上，每个 sing-box tag 对应一个 prerelease，名为 `<tag>-ut`。
+
+| 文件 | 用途 |
+|---|---|
+| `sing-box_<version>_linux_amd64.deb`、`…_arm64.deb` | Debian 和 Ubuntu。包名和文件布局与官方 `sing-box` 包相同，安装后替换官方包 |
+| `sing-box_<version>_windows_amd64.zip`、`…_arm64.zip` | Windows：`sing-box.exe` |
+| `SFA-<version>-arm64-v8a.apk` | Android（sing-box for Android，内核换成打过补丁的） |
+
+Android 应用沿用官方的 application id，所以不能和官方 SFA 同时安装，两者之间切换要先卸载。文件名以 `-UNSIGNED-KEY` 结尾的 APK 是用一次性密钥签的，不能覆盖升级。
 
 ## 🧭 使用
 
-### 对接真实的 Xray 服务端做验证
+### 对接真实的 Xray 服务端验证构建
 
 需要 bash、python3、curl 和 unzip，并且 127.0.0.1 上的 1080、6501、6502、8000 端口空闲。
 
@@ -88,13 +95,16 @@ ok: payload intact, 1 connection(s) via the download server
 PASS
 ```
 
-### 在 GitHub Actions 里跑同样的检查
+### 为其他平台构建，或打 .deb 包
 
-打开 **Actions → verify-download → Run workflow**。推送改到补丁、互通测试或 workflow 时也会自动运行。这个任务把补丁打到 sing-box-lx 上，运行 `gofmt`、`go vet` 和单元测试，编译客户端，再跑互通测试。
+```bash
+env GOOS=windows GOARCH=arm64 scripts/build.sh work sing-box.exe
+scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13 sing-box_amd64.deb
+```
 
 ## 🔧 配置
 
-补丁只给 VLESS 出站的 XHTTP transport 加了一个对象 `download`，其余都是 sing-box-lx 原有的 XHTTP 配置。
+相对 sing-box-lx 的 XHTTP 配置，只多了一个对象：VLESS 出站的 XHTTP transport 里的 `download`。
 
 | 名称 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -120,7 +130,7 @@ PASS
   "tag": "xhttp-split",
   "server": "up.example.com",
   "server_port": 443,
-  "uuid": "<UUID_FOR_SING_BOX_UT>",
+  "uuid": "<UUID>",
   "encryption": "<VLESS_ENCRYPTION>",
   "tls": {
     "enabled": true,
@@ -179,40 +189,47 @@ PASS
 
 ### HTTP/3
 
-把 `tls` 和 `download.tls` 里的 `alpn` 改成 `["h3"]`，并去掉 `utls`（指纹对 QUIC 不生效）。上下行互相独立，可以只改其中一边。服务器必须能通过 UDP 访问：Caddy 在与 HTTPS 端口同号的 UDP 端口上提供 HTTP/3，转发给 Xray 时仍然是 h2c，所以 Caddyfile 不用改。
+把 `tls` 和 `download.tls` 里的 `alpn` 改成 `["h3"]`。上下行互相独立，可以只改其中一边。`utls` 指纹在 QUIC 上不生效，日志里会有一条警告。服务器必须能通过 UDP 访问：Caddy 在与 HTTPS 端口同号的 UDP 端口上提供 HTTP/3，转发给 Xray 时仍然是 h2c，所以 Caddyfile 不用改。
 
 ### 没有对应项的 Xray 设置
 
 | Xray 客户端设置 | 这里 |
 |---|---|
-| `flow: xtls-rprx-vision` | 不支持。服务端不能要求这个客户端带 flow：在 `clients` 里给它单独一项且不写 `flow`，`settings` 层也不要写 `flow`，否则 Xray 会拒绝不带 flow 的客户端 |
+| `flow: xtls-rprx-vision` | 暂时不支持。两端都不要配 |
 | `finalmask.quicParams`（拥塞控制、接收窗口） | 不可配置。它只对 HTTP/3 生效；这里的 QUIC 用 quic-go 的默认值 |
 | `finalmask.udp`（noise） | 不支持 |
 | `testpre` | 不支持 |
 | `downloadSettings` 里的 `flow`、`encryption`、`testpre` | 不是传输层设置，直接去掉 |
 
-| Xray `downloadSettings` | 这里 |
-|---|---|
-| `address`、`port` | `download.server`、`download.server_port` |
-| `security`、`tlsSettings` | `download.tls` |
-| `xhttpSettings.*` | `download.*`，改为 snake_case，例如 `xPaddingBytes` → `x_padding_bytes` |
-
 ## 🔄 更新与维护
 
-### sing-box-lx 更新时
+### sing-box 出新 tag
 
-workflow 跟的是 `lx-1.15` 分支的最新提交。如果 lx 改到了补丁涉及的行，“Apply the download patch” 这一步会失败。在一个新的 lx clone 里重做补丁：
+`build` workflow 每天运行一次，上游有新 tag 而这里还没有对应 release 时就构建并发布。不失败就不用管。失败通常是上游改了 `patches/0001-upstream-seams.patch` 涉及的五个文件之一：对着新 tag 修好补丁再推送。
+
+### 换用更新的 sing-box-lx
+
+构建只从 `lx.ref` 里钉住的那一个 sing-box-lx 提交复制文件，因为 lx 的 XHTTP 代码在不断增加对 lx 专有包的依赖。要换提交，先用新的提交或分支试一次：
 
 ```bash
-git -C lx apply --reject ../patches/0002-lx-xhttp-download.patch
-# fix every *.rej by hand, delete them, then:
-git -C lx add -A
-git -C lx diff --cached > patches/0002-lx-xhttp-download.patch
+env LX_REF=lx-1.15 scripts/prepare.sh work-next
 ```
 
-### Xray 发新版本时
+如果能编译、`test/interop/run.sh` 也通过，就把那个提交的完整 SHA 写进 `lx.ref`。如果复制来的文件引用了上游没有的包，要么把那个包加进 `lx-files.txt`，要么留在旧的提交上。
 
-互通测试钉死了 Xray 版本（workflow 里的 `XRAY_VERSION`），因为服务端默认值会随版本变化。要换版本，先手动运行 workflow 并在 `xray_version` 输入框填新 tag，通过后再改默认值。
+### Xray 出新版本
+
+互通测试钉死了 Xray 版本（workflow 里的 `XRAY_VERSION`），因为服务端默认值会随版本变化。改掉版本号后推送，workflow 会告诉你测试是否还能通过。
+
+### Secrets
+
+| Secret | 必填 | 用途 |
+|---|---|---|
+| `ANDROID_KEYSTORE_BASE64` | ❌ | APK 签名用的 keystore 的 Base64。不设的话每次运行用一次性密钥 |
+| `ANDROID_KEYSTORE_PASS`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASS` | ❌ | keystore 密码、密钥别名、密钥密码（默认同 keystore 密码） |
+| `TG_BOT_TOKEN`、`TG_CHAT_ID` | ❌ | 构建失败时发 Telegram 消息 |
+
+仓库 60 天没有活动时，GitHub 会停用定时 workflow，需要到 Actions 页面重新启用。
 
 ## 🧠 工作原理
 
@@ -224,69 +241,63 @@ flowchart LR
   D --> X
 ```
 
-- **下行端点就是第二个 XHTTP 客户端** → 请求构造的所有规则（padding、placement、headers、HTTP 版本）直接复用，连接池各用各的，sing-box-lx 原有文件只改了约 70 行。
+- **用上游源码，不 fork** → 每次构建都从原样的 sing-box tag 开始，没有合并要维护。文件从 sing-box-lx 复制进来，再用两个小补丁接上。
+- **下行端点就是第二个 XHTTP 客户端** → 请求构造的所有规则（padding、placement、headers、HTTP 版本）直接复用，连接池各用各的。
 - **两条池化连接一起释放** → 连接关闭或失败时，两个池都不会漏掉占用。
-- **用补丁，不 fork** → sing-box-lx 一直在更新。只动它四个文件的补丁维护成本低，打不上时会立刻报错。
 
 ## 📁 项目结构
 
 ```text
 .
+├── lx.ref                    # the sing-box-lx commit the build copies files from
+├── lx-files.txt              # which sing-box-lx files are copied
 ├── patches/
-│   └── 0002-lx-xhttp-download.patch   # the change: XHTTP download endpoint + unit tests
-├── test/interop/
-│   ├── run.sh                         # runs every case against a real Xray
-│   ├── gen.py                         # writes the Xray and sing-box configs for one case
-│   └── tcp_tap.py                     # stands in for the download server, logs what reaches it
-├── .github/workflows/
-│   └── verify-download.yml            # apply, vet, test, build, interop
-├── examples/                          # complete configs: sing-box client, Xray server, Caddyfile
-├── docs/NOTES.zh-CN.md                # research, decisions and pitfalls (Chinese)
-└── AGENTS.md                          # commands and conventions for AI coding agents
+│   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
+│   └── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
+├── overlay/                  # our own files, copied over the tree (libbox build tag)
+├── scripts/
+│   ├── prepare.sh            # assembles the source tree
+│   ├── build.sh              # compiles sing-box from it
+│   ├── package-deb.sh        # packs a .deb
+│   └── go-version.sh         # the Go version upstream builds with
+├── test/interop/             # runs the client against a real Xray server
+├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile
+├── .github/workflows/build.yml
+├── docs/NOTES.zh-CN.md       # research, decisions and pitfalls (Chinese)
+└── AGENTS.md                 # commands and conventions for AI coding agents
 ```
-
-补丁在 sing-box-lx 里改动的文件：
-
-| 文件 | 改动 |
-|---|---|
-| `option/v2ray_xhttp.go` | 加 `download` 字段 |
-| `option/v2ray_xhttp_download_ut.go` | 新增：`download` 的选项类型 |
-| `transport/v2rayxhttp/client.go` | 构建下行端点，确定 mode |
-| `transport/v2rayxhttp/conn.go` | 下行 GET 改走下行端点 |
-| `transport/v2rayxhttp/xmux.go` | 下行连接随上行连接一起释放 |
-| `transport/v2rayxhttp/download_ut.go` | 新增：下行端点的逻辑 |
-| `transport/v2rayxhttp/download_ut_test.go` | 新增：单元测试 |
 
 ## 🔨 开发
 
-在[快速开始](#-快速开始)里打好补丁的 `lx` 目录中运行：
+在拼好的源码树里跑补丁涉及的包的单元测试：
 
 ```bash
-gofmt -l option/v2ray_xhttp*.go transport/v2rayxhttp/
-go vet -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
-go test -count=1 -race -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
+cd work
+go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/ ./protocol/vless/...
+go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
 ```
 
-`gofmt` 没有输出，两个测试包都显示 `ok`。补丁加进 lx 文件的行都带 `// ut:` 标记。新代码尽量放在 `*_ut.go` 文件里，让补丁碰到的 lx 原有行越少越好。
+两个测试包都显示 `ok`。要改下行逻辑，先改 `work/` 里的文件，再按 [AGENTS.md](AGENTS.md) 的说明重新生成 `patches/0002-lx-xhttp-download.patch`。加进 lx 文件的行都带 `// ut:` 标记；新代码放在 `*_ut.go` 文件里。
 
 ## 🚧 局限与路线
 
-- 不发布二进制。跟随 sing-box 最新 alpha 自动构建 Linux `.deb` 和 Android APK 的流水线，设计写在 [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md) 里，还没有放进本仓库。
-- 只在 Linux amd64 上测过，并且是 Xray 自己做 TLS 终结。没测过：Xray 前面放 Caddy、CDN、下行端点用 REALITY、经 detour 拨号、Android。
-- 不支持 Vision flow，也不能调 QUIC 的拥塞控制和窗口，见[配置](#-配置)。
+- 暂时不支持 Vision flow，也不能调 QUIC 的拥塞控制和窗口，见[配置](#-配置)。
+- Linux 和 Windows 的构建用上游的默认标签，不含 naive 出站。
+- 只在 Linux amd64 上测过，并且是 Xray 自己做 TLS 终结。没测过：Xray 前面放 Caddy、CDN、下行端点用 REALITY、经 detour 拨号。Windows 和 Android 的构建产物本文档的作者没有实际运行过。
 - 只有客户端。sing-box-lx 没有 XHTTP 服务端。
 
 ## 🔀 上游与差异
 
-基于 [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 的 `lx-1.15` 分支（`20723b7`），它合并了 [SagerNet/sing-box](https://github.com/SagerNet/sing-box) 的 `v1.15.0-alpha.13`。
+用 [SagerNet/sing-box](https://github.com/SagerNet/sing-box) 的最新 tag 构建（已用 `v1.15.0-alpha.13` 验证），文件取自 [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 在 `lx.ref` 里的那个提交。
 
 | 方面 | sing-box | sing-box-lx | 本仓库 |
 |---|---|---|---|
 | XHTTP 客户端 | ❌ | ✅ | ✅ |
 | VLESS encryption | ❌ | ✅ | ✅ |
 | 下行走另一台服务器 | ❌ | ❌ | ✅ |
+| sing-box-lx 的其他改动 | ❌ | ✅ | ❌ |
 
-同步方式是手动：补丁打不上时 workflow 会报出来，见[更新与维护](#-更新与维护)。
+与上游的同步是自动的，见[更新与维护](#-更新与维护)。
 
 ## 📚 文档地图
 

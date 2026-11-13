@@ -4,7 +4,7 @@
 
 ## 背景
 客户端现在是 sing-box（TUN）→ 本机 socks 127.0.0.1:1234 → xray-core（VLESS + XHTTP + vlessenc）。目标是做一个 sing-box 的定制构建，原生支持这条链路，从而去掉客户端上的 xray。要求：跟进 sing-box 最新 tag（含 alpha，因为上游是半年一个大版本）；用 GitHub Actions 自动产出 Linux `.deb` 和 Android `arm64-v8a` APK；失败时发 TG 通知，用户再手动处理。
-**当前状态（2026-11-11）：恢复推进，走方案 (b)，download 补丁已实测通过。** 在 lx 的 XHTTP 上补出了上下行分离（`patches/0002-lx-xhttp-download.patch`），本地编译、单元测试、对真实 Xray 26.11.9 的互通都过了，包括"上游 alpha.13 + lx 文件 + 接缝 + 本补丁"这条最终构建路线。还没做的是自动构建流水线（deb / APK）和在真实服务器上的实测。
+**当前状态（2026-11-12）：构建流水线已写好，等 Actions 首跑。** download 补丁和整条"上游 tag + lx 文件 + 补丁"路线本地都验证过（含 H3）。`build` workflow 会出 Linux deb（amd64、arm64）、Windows exe（amd64、arm64）和 Android arm64-v8a APK，并发 prerelease。本地验证到的是：`prepare.sh`、vet 和单元测试、Linux 两个架构的二进制、deb 打包、6 个互通用例。workflow 本身、完整的 Windows 二进制、Android 这三样还没在任何地方跑过。
 
 ## 运行环境
 - 服务端：Caddy 按 path 反代到 `h2c://127.0.0.1:6501` 的 xray inbound（vless + xhttp `mode:auto`，`security:none`，开了 decryption 和 xPadding 混淆），保持不变。xray 只能做服务端，sing-box 各个移植版本都只实现了客户端。
@@ -66,7 +66,7 @@
 
 还没评估过的：extended 的 congestion 和 xray 包还会再引入多少依赖；它的 vlessenc 是否和 lx 的实现等价。
 
-## 已有产出（在用户手上：init.sh 和 README.md，基于 lx 方案）
+## 历史记录：最初的 init.sh 方案（文件已丢失，2026-11-12 重建为 scripts/，见文末）
 - `init.sh` 子命令：
   - `scaffold`：默认命令，生成仓库骨架。
   - `check`：对比上游最新 tag 和 lx 提交与 `state.json`，输出 `changed` 和 `seams_changed`。
@@ -104,21 +104,17 @@
 - deb 的包名就是 `sing-box`，会替换官方包；如果配置了官方 apt 源会被覆盖回去，需要 `apt-mark hold`。
 
 ## 待办
-0. （当前）补丁已实测通过。接下来：
-   - 推送后确认 `verify-download` 在 Actions 上也是绿的。
-   - 把 `init.sh` 等已有产出提交进仓库（现在还在用户手上）。改三处：`LX_BRANCH=lx-1.15`；`lx-files.txt` 加 `common/lxtrace/doc.go` 和 `common/lxtrace/*_stub.go`；`patches/0002-lx-xhttp-download.patch` 会在 `prepare` 的 `git apply patches/*` 里自动打上（它改的全是从 lx 复制来的文件，路径一致）。
-   - 把用户的 xray 客户端配置翻成 sing-box 配置，在真实的两台服务器上实测。
-   - 再接着做第 2 步的完整 workflow（interop 一步可以直接复用 `test/interop/run.sh`）。
-1. ~~决定 XHTTP 的来源~~（已选 b，以下保留作记录）：
-   - (a) 从 extended 抽取 XHTTP 加 download，enc 用 lx 或 extended 的。先评估依赖闭包，以及它对上游 alpha 的适配程度。
-   - (b) 在 lx 的 XHTTP 上自己实现 downloadSettings，可参考 extended `transport/v2rayxhttp/client.go` 里的 `Download` 分支。
-   - (c) 维持现状，客户端继续用 xray。
-2. 选定后：先用户在 Codespaces 里 `./init.sh build` 验证首次编译，再写 workflow：check → linux（prepare/build/deb）→ interop（runner 里起 xray 服务端，自签证书，两个 inbound 模拟分离，curl 验证）→ android → release（prerelease，加 `save-state` 并提交，失败发 TG）。
+1. 推送后看 `build` workflow 的首次运行，按日志修，Android 优先。
+2. 在真实的两台服务器（Caddy → h2c → xray）上实测 H2 和 H3。
+3. 配 Secrets：APK 签名 keystore、TG 通知。
+4. 以后可做：Android 改 applicationId 以便和官方 SFA 共存；下行端点的日志加标签区分上下行。
 
-## 运行
-下面是 `init.sh` 的用法。`init.sh` 还没进仓库；仓库里现在能跑的命令见 [README](../README.zh-CN.md)。
-```bash
-./init.sh && ./init.sh prepare && ./init.sh build    # Codespaces 里运行，需要 Go
-./init.sh check                                       # CI 判断是否需要构建
-# 补丁失败：照 .rej 修改 work/sing-box → 删掉 .rej → ./init.sh build → ./init.sh export → 提交 patches/
-```
+## 2026-11-12 更新：构建流水线
+- 原来的 `init.sh`、`lx-files.txt`、overlay、接缝补丁都没进过仓库，已经丢了。这次重建为 `scripts/prepare.sh` + `lx-files.txt` + `overlay/` + `patches/0001-upstream-seams.patch`，结构和原方案一致。
+- **lx 改为钉死提交（`lx.ref`），不跟分支。** 原因：`lx-1.15` 在 `20723b7` 之后给 XHTTP 加了对 `common/lxdatagram` 和 `adapter.OutboundTypeFromContext` 的依赖（lx 专有），直接跟分支当天就编不过。换提交要人工确认依赖闭包并跑互通。
+- `lx-files.txt` 比原方案多两项：`common/lxtrace` 的 stub，和 `common/tls/utls_client_std_lx.go`。后者不带的话，H3 + `utls` 的配置会报 `unsupported usage for uTLS`，lx 自己的三个测试也会失败。带上之后，复制过来的 lx 测试在上游树上全部通过。
+- deb 不用 fpm（ruby 依赖，且本地没法测），改用 `dpkg-deb`，文件清单从上游的 `.fpm_systemd` 解析，所以跟着上游走。包名仍是 `sing-box`，版本 `1.15.0~alpha.13+ut`：比同 tag 的官方包新，比下一个 alpha 旧。
+- Linux 和 Windows 都用 `DEFAULT_BUILD_TAGS_OTHERS` + `with_xhttp`，纯 Go（`CGO_ENABLED=0`），所以没有 naive 出站。上游的 musl + cronet 构建太重，没有照搬。
+- Android：只编 arm64 的 libbox，`with_xhttp` 通过 overlay 里的 `ut_tags.go` 追加；用上游 tag 钉住的 SFA 提交；`assembleOtherRelease` 后取 arm64-v8a 的 APK。没配签名 secrets 时用一次性密钥，文件名带 `-UNSIGNED-KEY`。applicationId 没改，和官方 SFA 不能共存。
+- 版本号：二进制是 `<tag>-ut`；libbox 的版本来自 `git describe`，是上游原版本号，所以 `prepare.sh` 只暂存不提交。
+- 定时任务每天一次，只在"上游最新 tag 还没有对应 release"时构建。推送改到构建输入时也会构建并覆盖同名 release 的文件。

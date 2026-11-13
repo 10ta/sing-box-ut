@@ -1,0 +1,353 @@
+# Builds sing-box-ut from upstream sing-box + sing-box-lx files + patches:
+#   test      vet and unit tests of the patched packages
+#   binaries  Linux .deb (amd64, arm64) and Windows .exe (amd64, arm64)
+#   interop   the Linux amd64 binary against a real Xray server
+#   android   arm64-v8a APK (libbox + sing-box-for-android)
+#   release   a prerelease named <upstream tag>-ut with every artifact
+# Runs daily (builds only when upstream has a tag without a release here),
+# on pushes that change the build inputs, and on demand.
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: sing-box tag to build (empty = newest)
+        default: ""
+      lx_ref:
+        description: sing-box-lx branch, tag or full commit SHA (empty = lx.ref)
+        default: ""
+      publish:
+        description: Publish a prerelease
+        type: boolean
+        default: true
+  schedule:
+    - cron: "17 4 * * *"
+  push:
+    branches: [main]
+    paths:
+      - patches/**
+      - overlay/**
+      - scripts/**
+      - test/**
+      - lx-files.txt
+      - lx.ref
+      - .github/workflows/build.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned: Xray changes server defaults between releases. Bump after re-running the interop.
+  XRAY_VERSION: v26.11.9
+
+jobs:
+  resolve:
+    name: Resolve versions
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_ref: ${{ steps.refs.outputs.upstream_ref }}
+      lx_ref: ${{ steps.refs.outputs.lx_ref }}
+      version: ${{ steps.refs.outputs.version }}
+      release_tag: ${{ steps.refs.outputs.release_tag }}
+      build: ${{ steps.refs.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          INPUT_LX_REF: ${{ inputs.lx_ref }}
+        run: |
+          set -euo pipefail
+          upstream_ref=$INPUT_UPSTREAM_REF
+          if [ -z "$upstream_ref" ]; then
+            upstream_ref=$(git -c versionsort.suffix=- ls-remote --tags --refs --sort=-v:refname https://github.com/SagerNet/sing-box 'v*' | sed -n '1s#.*refs/tags/##p')
+          fi
+          [ -n "$upstream_ref" ]
+          lx_ref=${INPUT_LX_REF:-$(tr -d '[:space:]' < lx.ref)}
+          release_tag="${upstream_ref}-ut"
+          build=true
+          # The daily run only builds an upstream tag that has no release here yet.
+          if [ "${{ github.event_name }}" = schedule ] && gh release view "$release_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            build=false
+          fi
+          {
+            echo "upstream_ref=$upstream_ref"
+            echo "lx_ref=$lx_ref"
+            echo "version=${upstream_ref#v}-ut"
+            echo "release_tag=$release_tag"
+            echo "build=$build"
+          } | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: Vet and unit tests
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare source
+        env:
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+          LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+        run: scripts/prepare.sh work
+      - name: Go version
+        id: go
+        run: scripts/go-version.sh work >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache-dependency-path: work/go.sum
+      - name: Vet and test
+        working-directory: work
+        run: |
+          set -euo pipefail
+          tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_xhttp"
+          packages="./option/ ./common/badh2/ ./common/lxtrace/ ./common/tls/ ./transport/v2ray/ ./transport/v2rayxhttp/ ./protocol/vless/..."
+          go vet -tags "$tags" $packages
+          go test -count=1 -race -tags "$tags" $packages
+
+  binaries:
+    name: ${{ matrix.os }}/${{ matrix.arch }}
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64 }
+          - { os: linux, arch: arm64 }
+          - { os: windows, arch: amd64 }
+          - { os: windows, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare source
+        env:
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+          LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+        run: scripts/prepare.sh work
+      - name: Go version
+        id: go
+        run: scripts/go-version.sh work >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache-dependency-path: work/go.sum
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          exe=sing-box; [ "$GOOS" = windows ] && exe=sing-box.exe
+          scripts/build.sh work "bin/$exe" "$VERSION"
+      - name: Package .deb
+        if: matrix.os == 'linux'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # The package script appends +ut itself.
+          scripts/package-deb.sh work bin/sing-box "${{ matrix.arch }}" "${VERSION%-ut}" "dist/sing-box_${VERSION}_linux_${{ matrix.arch }}.deb"
+      - name: Package .zip
+        if: matrix.os == 'windows'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp work/LICENSE bin/LICENSE
+          (cd bin && zip -q "../dist/sing-box_${VERSION}_windows_${{ matrix.arch }}.zip" sing-box.exe LICENSE)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  interop:
+    name: Interop with Xray
+    needs: [resolve, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-amd64
+          path: dist
+      - name: Unpack the binary
+        run: |
+          set -euo pipefail
+          dpkg-deb -x dist/*.deb pkg
+          pkg/usr/bin/sing-box version
+      - name: Fetch Xray
+        run: |
+          set -euo pipefail
+          curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/$XRAY_VERSION/Xray-linux-64.zip"
+          unzip -q xray.zip xray -d xray-bin && chmod +x xray-bin/xray
+          xray-bin/xray version | head -1 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Interop
+        run: test/interop/run.sh pkg/usr/bin/sing-box xray-bin/xray
+
+  android:
+    name: Android arm64-v8a
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare source
+        env:
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+          LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+        run: scripts/prepare.sh work
+      - name: Fetch the Android client
+        working-directory: work
+        run: |
+          set -euo pipefail
+          # The commit upstream pins for this tag.
+          git submodule update --init --depth 1 clients/android
+          git -C clients/android submodule update --init --recursive --depth 1
+      - name: Go version
+        id: go
+        run: scripts/go-version.sh work >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache-dependency-path: work/go.sum
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Build libbox
+        working-directory: work
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          # overlay/cmd/internal/build_libbox/ut_tags.go adds with_xhttp.
+          go run ./cmd/internal/build_libbox -target android -platform android/arm64
+          mkdir -p clients/android/app/libs
+          cp libbox.aar libbox-legacy.aar clients/android/app/libs/
+      - name: Signing key
+        id: signing
+        working-directory: work/clients/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/release.keystore
+            store_pass=$ANDROID_KEYSTORE_PASS; alias=$ANDROID_KEY_ALIAS; key_pass=${ANDROID_KEY_PASS:-$ANDROID_KEYSTORE_PASS}
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+          else
+            # No key configured: a throwaway key. Such an APK installs, but cannot
+            # update an APK from another run (the signature differs every time).
+            store_pass=throwaway; alias=throwaway; key_pass=throwaway
+            keytool -genkeypair -keystore app/release.keystore -storepass "$store_pass" -keypass "$key_pass" \
+              -alias "$alias" -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=sing-box-ut throwaway"
+            echo "signed=throwaway" >> "$GITHUB_OUTPUT"
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set: the APK is signed with a throwaway key"
+          fi
+          printf 'KEYSTORE_PASS=%s\nALIAS_NAME=%s\nALIAS_PASS=%s\n' "$store_pass" "$alias" "$key_pass" > local.properties
+      - name: Build APK
+        working-directory: work/clients/android
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i "s/^VERSION_NAME=.*/VERSION_NAME=$VERSION/" version.properties
+          cat version.properties
+          ./gradlew --no-daemon :app:assembleOtherRelease
+          ls -la app/build/outputs/apk/other/release/
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          suffix=; [ "${{ steps.signing.outputs.signed }}" = throwaway ] && suffix=-UNSIGNED-KEY
+          cp app/build/outputs/apk/other/release/*arm64-v8a*.apk "$GITHUB_WORKSPACE/dist/SFA-${VERSION}-arm64-v8a${suffix}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-android-arm64
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish prerelease
+    needs: [resolve, test, binaries, interop, android]
+    # Android may fail without blocking the other artifacts.
+    if: >-
+      always() && github.event_name != 'pull_request'
+      && (github.event_name != 'workflow_dispatch' || inputs.publish)
+      && needs.test.result == 'success' && needs.binaries.result == 'success' && needs.interop.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          cat > notes.md <<EOF
+          Built from sing-box \`${{ needs.resolve.outputs.upstream_ref }}\` with the XHTTP client and VLESS encryption of sing-box-lx (\`${{ needs.resolve.outputs.lx_ref }}\`) and the patches of this repository at \`${{ github.sha }}\`.
+
+          Android APK: ${{ needs.android.result }}.
+          EOF
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "${{ github.repository }}"
+            gh release edit "$TAG" --notes-file notes.md --repo "${{ github.repository }}"
+          else
+            gh release create "$TAG" dist/* --prerelease --title "$TAG" --notes-file notes.md \
+              --target "${{ github.sha }}" --repo "${{ github.repository }}"
+          fi
+
+  notify:
+    name: Notify on failure
+    needs: [resolve, test, binaries, interop, android, release]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          RESULTS: "test=${{ needs.test.result }} binaries=${{ needs.binaries.result }} interop=${{ needs.interop.result }} android=${{ needs.android.result }} release=${{ needs.release.result }}"
+        run: |
+          set -euo pipefail
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "TG_BOT_TOKEN / TG_CHAT_ID are not set, skipping"; exit 0
+          fi
+          text="sing-box-ut build failed for ${{ needs.resolve.outputs.upstream_ref }}
+          $RESULTS
+          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -fsS -o /dev/null "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "text=${text}"

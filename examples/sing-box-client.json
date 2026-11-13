@@ -3,7 +3,7 @@
   "tag": "xhttp-split",
   "server": "up.example.com",
   "server_port": 443,
-  "uuid": "<UUID_FOR_SING_BOX_UT>",
+  "uuid": "<UUID>",
   "encryption": "<VLESS_ENCRYPTION>",
   "tls": {
     "enabled": true,

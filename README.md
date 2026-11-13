@@ -4,7 +4,7 @@
 
 Patches that give sing-box a native VLESS + XHTTP client with split upload/download, so clients can drop xray-core.
 
-[![verify-download](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/verify-download.yml)
+[![build](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml)
 
 What works today, each item tested against a real Xray server:
 
@@ -16,6 +16,7 @@ What works today, each item tested against a real Xray server:
 
 - [Why sing-box-ut?](#-why-sing-box-ut)
 - [Quick Start](#-quick-start)
+- [Installation](#-installation)
 - [Usage](#-usage)
 - [Configuration](#-configuration)
 - [Update & Maintenance](#-update--maintenance)
@@ -29,38 +30,44 @@ What works today, each item tested against a real Xray server:
 
 ## 💡 Why sing-box-ut?
 
-Xray's XHTTP can send uploads to one server and downloads to another (`downloadSettings`). No sing-box build could, so a sing-box client that needs it has to run xray-core next to it. This repository carries the missing piece as a patch on top of [sing-box-lx](https://github.com/Leadaxe/sing-box-lx), which already has an XHTTP client and VLESS encryption.
+Xray's XHTTP can send uploads to one server and downloads to another (`downloadSettings`). No sing-box build could, so a sing-box client that needs it has to run xray-core next to it. This repository builds the latest sing-box alpha with the XHTTP client and VLESS encryption of [sing-box-lx](https://github.com/Leadaxe/sing-box-lx), plus the missing split download.
 
-- ✅ Good fit: a sing-box client that talks to an Xray server over VLESS + XHTTP with `downloadSettings`.
-- ❌ Not a fit: you need a ready-made binary (none is published yet, see [Limitations & Roadmap](#-limitations--roadmap)), an XHTTP server (client only, keep Xray on the server), or `stream-one` mode with a split download.
+- ✅ Good fit: a sing-box client that talks to an Xray server over VLESS + XHTTP, with or without `downloadSettings`.
+- ❌ Not a fit: you need the Vision flow (`xtls-rprx-vision` is not supported for now), an XHTTP server (client only, keep Xray on the server), or `stream-one` mode with a split download.
 
 ## 🚀 Quick Start
 
-Needs git and Go 1.26 or newer on Linux.
+Build from source on Linux. Needs git, bash and the Go version upstream builds with (1.26.10 for `v1.15.0-alpha.13`).
 
 ```bash
 git clone https://github.com/10ta/sing-box-ut
 cd sing-box-ut
-git clone --depth 1 -b lx-1.15 --recurse-submodules --shallow-submodules https://github.com/Leadaxe/sing-box-lx lx
-git -C lx apply ../patches/0002-lx-xhttp-download.patch
-cd lx
-env CGO_ENABLED=0 go build -trimpath -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" -ldflags "-s -w -checklinkname=0" -o ../sing-box ./cmd/sing-box
-cd ..
+scripts/prepare.sh work
+scripts/build.sh work sing-box
 ./sing-box version
 ```
 
-The last command prints the build tags, which must include `with_xhttp`:
+`prepare.sh` assembles the source in `work/` from the newest sing-box tag. The last command prints the version, which ends in `-ut`:
 
 ```text
-sing-box version unknown
-
-Environment: go1.26.6 linux/amd64
-Tags: with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0
+sing-box version 1.15.0-alpha.13-ut
 ```
+
+## 📦 Installation
+
+Prebuilt files are attached to each [release](https://github.com/10ta/sing-box-ut/releases), one prerelease per sing-box tag, named `<tag>-ut`.
+
+| File | For |
+|---|---|
+| `sing-box_<version>_linux_amd64.deb`, `…_arm64.deb` | Debian and Ubuntu. Same package name and layout as the official `sing-box` package, which it replaces |
+| `sing-box_<version>_windows_amd64.zip`, `…_arm64.zip` | Windows: `sing-box.exe` |
+| `SFA-<version>-arm64-v8a.apk` | Android (sing-box for Android with the patched core) |
+
+The Android app keeps the official application id, so it cannot be installed next to the official SFA, and switching between the two needs an uninstall first. An APK whose name ends in `-UNSIGNED-KEY` was signed with a throwaway key and cannot be updated in place.
 
 ## 🧭 Usage
 
-### Verify the client against a real Xray server
+### Verify a build against a real Xray server
 
 Needs bash, python3, curl and unzip, with ports 1080, 6501, 6502 and 8000 free on 127.0.0.1.
 
@@ -88,13 +95,16 @@ ok: payload intact, 1 connection(s) via the download server
 PASS
 ```
 
-### Run the same checks in GitHub Actions
+### Build for another platform, or pack a .deb
 
-Open **Actions → verify-download → Run workflow**. It also runs on every push that touches the patch, the interop test or the workflow. The job applies the patch to sing-box-lx, runs `gofmt`, `go vet` and the unit tests, builds the client and runs the interop test.
+```bash
+env GOOS=windows GOARCH=arm64 scripts/build.sh work sing-box.exe
+scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13 sing-box_amd64.deb
+```
 
 ## 🔧 Configuration
 
-The patch adds one object, `download`, to the XHTTP transport of a VLESS outbound. Everything else is sing-box-lx's XHTTP configuration.
+The only addition to sing-box-lx's XHTTP configuration is one object, `download`, in the XHTTP transport of a VLESS outbound.
 
 | Name | Required | Default | Description |
 |---|---|---|---|
@@ -120,7 +130,7 @@ A VLESS outbound that uploads through `up.example.com` and downloads through `do
   "tag": "xhttp-split",
   "server": "up.example.com",
   "server_port": 443,
-  "uuid": "<UUID_FOR_SING_BOX_UT>",
+  "uuid": "<UUID>",
   "encryption": "<VLESS_ENCRYPTION>",
   "tls": {
     "enabled": true,
@@ -179,40 +189,47 @@ The matching server side is in [`examples/`](examples/): [`xray-server.json`](ex
 
 ### HTTP/3
 
-Set `alpn` to `["h3"]` in `tls` and in `download.tls`, and remove `utls` (fingerprints do not apply to QUIC). The two halves are independent, so one may stay on HTTP/2. The server must be reachable on UDP: Caddy serves HTTP/3 on the UDP port with the same number as its HTTPS port and still forwards h2c to Xray, so the Caddyfile does not change.
+Set `alpn` to `["h3"]` in `tls` and in `download.tls`. The two halves are independent, so one may stay on HTTP/2. A `utls` fingerprint is ignored over QUIC, with a warning in the log. The server must be reachable on UDP: Caddy serves HTTP/3 on the UDP port with the same number as its HTTPS port and still forwards h2c to Xray, so the Caddyfile does not change.
 
 ### Xray settings without a counterpart
 
 | Xray client setting | Here |
 |---|---|
-| `flow: xtls-rprx-vision` | Not supported. The server must not require a flow for this client: give it its own entry in `clients` without `flow`, and no `flow` at the `settings` level. Xray rejects a flow-less client otherwise |
+| `flow: xtls-rprx-vision` | Not supported for now. Use it on neither side |
 | `finalmask.quicParams` (congestion control, receive windows) | Not configurable. It applies to HTTP/3 only; here QUIC runs with quic-go defaults |
 | `finalmask.udp` (noise) | Not supported |
 | `testpre` | Not supported |
 | `flow`, `encryption`, `testpre` inside `downloadSettings` | Not transport settings. Drop them |
 
-| Xray `downloadSettings` | Here |
-|---|---|
-| `address`, `port` | `download.server`, `download.server_port` |
-| `security`, `tlsSettings` | `download.tls` |
-| `xhttpSettings.*` | `download.*` in snake_case, for example `xPaddingBytes` → `x_padding_bytes` |
-
 ## 🔄 Update & Maintenance
 
-### When sing-box-lx changes
+### A new sing-box tag
 
-The workflow follows the tip of `lx-1.15`. If lx touches the lines the patch changes, the "Apply the download patch" step fails. Rebuild the patch in a fresh lx clone:
+The `build` workflow runs daily, and builds and publishes when upstream has a tag without a release here. Nothing to do unless it fails. A failure usually means upstream changed one of the five files `patches/0001-upstream-seams.patch` touches: fix the patch against the new tag and push.
+
+### A newer sing-box-lx
+
+The build copies files from the one sing-box-lx commit pinned in `lx.ref`, because lx's XHTTP code keeps gaining dependencies on lx-only packages. To move the pin, try the new commit or branch first:
 
 ```bash
-git -C lx apply --reject ../patches/0002-lx-xhttp-download.patch
-# fix every *.rej by hand, delete them, then:
-git -C lx add -A
-git -C lx diff --cached > patches/0002-lx-xhttp-download.patch
+env LX_REF=lx-1.15 scripts/prepare.sh work-next
 ```
 
-### When Xray releases a new version
+If the tree builds and `test/interop/run.sh` passes, write the commit's full SHA into `lx.ref`. If a copied file now imports a package upstream does not have, add that package to `lx-files.txt` or stay on the old pin.
 
-The interop test pins Xray (`XRAY_VERSION` in the workflow) because server defaults change between releases. To move the pin, run the workflow with the new tag in the `xray_version` input, and change the default once it passes.
+### A new Xray version
+
+The interop test pins Xray (`XRAY_VERSION` in the workflow) because server defaults change between releases. Change the pin and push; the workflow shows whether the test still passes.
+
+### Secrets
+
+| Secret | Required | Purpose |
+|---|---|---|
+| `ANDROID_KEYSTORE_BASE64` | ❌ | Base64 of the keystore that signs the APK. Without it each run uses a throwaway key |
+| `ANDROID_KEYSTORE_PASS`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASS` | ❌ | Keystore password, key alias, key password (defaults to the keystore password) |
+| `TG_BOT_TOKEN`, `TG_CHAT_ID` | ❌ | Telegram message when a build fails |
+
+GitHub disables scheduled workflows after 60 days without repository activity; re-enable it on the Actions page.
 
 ## 🧠 How It Works
 
@@ -224,69 +241,63 @@ flowchart LR
   D --> X
 ```
 
-- **The download endpoint is a second XHTTP client** → it reuses every request-shaping rule (padding, placement, headers, HTTP version) and gets its own connection pool, with about 70 changed lines in existing sing-box-lx files.
+- **Upstream source, not a fork** → every build starts from the untouched sing-box tag, so there is no merge to maintain. Files are copied in from sing-box-lx, and two small patches connect them.
+- **The download endpoint is a second XHTTP client** → it reuses every request-shaping rule (padding, placement, headers, HTTP version) and gets its own connection pool.
 - **Both pooled connections are released together** → a closed or failed connection can never leak a slot in either pool.
-- **A patch, not a fork** → sing-box-lx keeps moving. A patch on four of its files is cheap to carry and fails loudly when it stops applying.
 
 ## 📁 Project Structure
 
 ```text
 .
+├── lx.ref                    # the sing-box-lx commit the build copies files from
+├── lx-files.txt              # which sing-box-lx files are copied
 ├── patches/
-│   └── 0002-lx-xhttp-download.patch   # the change: XHTTP download endpoint + unit tests
-├── test/interop/
-│   ├── run.sh                         # runs every case against a real Xray
-│   ├── gen.py                         # writes the Xray and sing-box configs for one case
-│   └── tcp_tap.py                     # stands in for the download server, logs what reaches it
-├── .github/workflows/
-│   └── verify-download.yml            # apply, vet, test, build, interop
-├── examples/                          # complete configs: sing-box client, Xray server, Caddyfile
-├── docs/NOTES.zh-CN.md                # research, decisions and pitfalls (Chinese)
-└── AGENTS.md                          # commands and conventions for AI coding agents
+│   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
+│   └── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
+├── overlay/                  # our own files, copied over the tree (libbox build tag)
+├── scripts/
+│   ├── prepare.sh            # assembles the source tree
+│   ├── build.sh              # compiles sing-box from it
+│   ├── package-deb.sh        # packs a .deb
+│   └── go-version.sh         # the Go version upstream builds with
+├── test/interop/             # runs the client against a real Xray server
+├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile
+├── .github/workflows/build.yml
+├── docs/NOTES.zh-CN.md       # research, decisions and pitfalls (Chinese)
+└── AGENTS.md                 # commands and conventions for AI coding agents
 ```
-
-Files the patch changes in sing-box-lx:
-
-| File | Change |
-|---|---|
-| `option/v2ray_xhttp.go` | Adds the `download` field |
-| `option/v2ray_xhttp_download_ut.go` | New: the `download` option type |
-| `transport/v2rayxhttp/client.go` | Builds the download endpoint, resolves the mode |
-| `transport/v2rayxhttp/conn.go` | Sends the download GET through the download endpoint |
-| `transport/v2rayxhttp/xmux.go` | Releases the download connection with the upload one |
-| `transport/v2rayxhttp/download_ut.go` | New: download endpoint logic |
-| `transport/v2rayxhttp/download_ut_test.go` | New: unit tests |
 
 ## 🔨 Development
 
-Run inside the patched `lx` directory from [Quick Start](#-quick-start):
+Run the unit tests of the patched packages in a prepared tree:
 
 ```bash
-gofmt -l option/v2ray_xhttp*.go transport/v2rayxhttp/
-go vet -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
-go test -count=1 -race -tags "with_quic,with_utls,with_clash_api,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
+cd work
+go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/ ./protocol/vless/...
+go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
 ```
 
-`gofmt` prints nothing and both test packages report `ok`. Lines the patch adds to lx files are marked `// ut:`. Keep new code in the `*_ut.go` files so the patch touches as few lx lines as possible.
+Both test packages report `ok`. To change the download logic, edit the files in `work/`, then regenerate `patches/0002-lx-xhttp-download.patch` as described in [AGENTS.md](AGENTS.md). Lines added to lx files are marked `// ut:`; new code goes in `*_ut.go` files.
 
 ## 🚧 Limitations & Roadmap
 
-- No binaries are published. The automated build that produces a Linux `.deb` and an Android APK from the latest sing-box alpha is designed in [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md) but is not in this repository yet.
-- Tested on Linux amd64 only, with Xray terminating TLS itself. Not tested: Caddy in front of Xray, a CDN, REALITY on the download endpoint, dialing through a detour, Android.
-- No Vision flow, and no control over QUIC congestion or windows, see [Configuration](#-configuration).
+- No Vision flow for now, and no control over QUIC congestion or windows, see [Configuration](#-configuration).
+- The Linux and Windows builds use upstream's default tags without the naive outbound.
+- Tested on Linux amd64 against Xray terminating TLS itself. Not tested: Caddy in front of Xray, a CDN, REALITY on the download endpoint, dialing through a detour. The Windows and Android builds have not been run by the author of this document.
 - Client only. sing-box-lx has no XHTTP server.
 
 ## 🔀 Upstream & Differences
 
-Based on [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) branch `lx-1.15` at `20723b7`, which merges [SagerNet/sing-box](https://github.com/SagerNet/sing-box) `v1.15.0-alpha.13`.
+Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at its newest tag (verified with `v1.15.0-alpha.13`), with files from [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) at the commit in `lx.ref`.
 
 | Aspect | sing-box | sing-box-lx | This repository |
 |---|---|---|---|
 | XHTTP client | ❌ | ✅ | ✅ |
 | VLESS encryption | ❌ | ✅ | ✅ |
 | Download through another server | ❌ | ❌ | ✅ |
+| Everything else in sing-box-lx | ❌ | ✅ | ❌ |
 
-Sync is manual: the workflow reports when the patch stops applying, see [Update & Maintenance](#-update--maintenance).
+Sync with upstream is automatic, see [Update & Maintenance](#-update--maintenance).
 
 ## 📚 Documentation
 
@@ -295,4 +306,4 @@ Sync is manual: the workflow reports when the patch stops applying, see [Update 
 
 ## 📄 License
 
-[GPL-3.0-or-later](LICENSE). The patch modifies sing-box and sing-box-lx source code, which carry the same license.
+[GPL-3.0-or-later](LICENSE). The patches modify sing-box and sing-box-lx source code, which carry the same license.

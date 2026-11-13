@@ -1,0 +1,24 @@
+# Files copied verbatim from sing-box-lx into the upstream sing-box tree.
+# One shell glob per line, relative to the repository root. A line ending in
+# "/" copies that directory's *.go files (not its subdirectories). A line
+# starting with "!" excludes files whose base name matches the glob.
+
+# XHTTP client transport and its registry hook
+transport/v2rayxhttp/
+transport/v2ray/registry.go
+include/v2rayxhttp.go
+option/v2ray_xhttp*.go
+common/badh2/
+
+# TLS helpers XHTTP over HTTP/3 needs
+common/tls/std_config_quic_lx.go
+common/tls/utls_client_std_lx.go
+
+# Trace hooks the transport calls: stubs only. The real ones need lx-only symbols.
+common/lxtrace/doc.go
+common/lxtrace/*_stub*.go
+
+# VLESS encryption (no Vision: those files need lx-only symbols)
+protocol/vless/encryption/
+protocol/vless/lx_encryption.go
+!lx_vision*
