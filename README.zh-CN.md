@@ -55,16 +55,16 @@ sing-box version 1.15.0-alpha.13-ut
 
 ## 📦 安装
 
-编译好的文件挂在每个 [release](https://github.com/10ta/sing-box-ut/releases) 上，每次构建一个 prerelease：`<tag>-ut`，同一个 sing-box tag 之后的构建依次为 `<tag>-ut.2`、`<tag>-ut.3`……包管理器能正确排序，升级时总会选到最新的那个。
+编译好的文件挂在每个 [release](https://github.com/10ta/sing-box-ut/releases) 上，每次构建一个 prerelease：`<tag>-ut`，同一个 sing-box tag 之后的构建依次为 `<tag>-ut.2`、`<tag>-ut.3`……包管理器能正确排序，升级时总会选到最新的那个。所有文件都按 `sing-box_<版本>_<系统>_<架构>.<扩展名>` 命名。
 
 | 文件 | 用途 |
 |---|---|
 | `sing-box_<version>_linux_amd64.deb`、`…_arm64.deb` | Debian 和 Ubuntu。包名和文件布局与官方 `sing-box` 包相同，安装后替换官方包。包含 naive 出站需要的 `/usr/lib/libcronet.so` |
-| `sing-box-<version>-linux-amd64.tar.gz`、`…-arm64.tar.gz` | 任何带 glibc 的 Linux：`sing-box` 和 `libcronet.so` 在同一个目录里，免安装 |
-| `sing-box_<version>_windows_amd64.zip`、`…_arm64.zip` | Windows：`sing-box.exe`，以及 naive 出站需要的 `libcronet.dll`（两个文件放在同一个文件夹） |
-| `SFA-<version>-arm64-v8a.apk` | Android（sing-box for Android，内核换成打过补丁的） |
+| `sing-box_<version>_linux_amd64.tar.gz`、`…_arm64.tar.gz` | 任何带 glibc 的 Linux：`sing-box` 和 `libcronet.so` 在同一个目录里，免安装 |
+| `sing-box_<version>_windows_amd64.zip`、`…_arm64.zip` | Windows：一个文件夹，里面是 `sing-box.exe` 和 naive 出站需要的 `libcronet.dll`（两者要放在一起） |
+| `sing-box_<version>_android_arm64.apk` | Android：sing-box for Android（SFA），内核换成打过补丁的，适用于 arm64-v8a 设备 |
 
-Android 应用沿用官方的 application id，所以不能和官方 SFA 同时安装，两者之间切换要先卸载。文件名以 `-UNSIGNED-KEY` 结尾的 APK 是用一次性密钥签的，不能覆盖升级。
+Android 应用沿用官方的 application id，所以不能和官方 SFA 同时安装，两者之间切换要先卸载。文件名以 `_throwaway-key` 结尾的 APK 是用一次性密钥签的，不能覆盖升级。
 
 ## 🧭 使用
 

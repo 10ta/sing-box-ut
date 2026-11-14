@@ -5,7 +5,7 @@
 - sing-box-ut: builds a pinned sing-box tag with a native VLESS + XHTTP client and split upload/download servers (Xray `downloadSettings`), so clients can drop xray-core. Human docs: [README.md](README.md). The user works in Chinese; the full decision log is [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md).
 - Type: fork/customization kept as patches, not a fork. Each build is: upstream SagerNet/sing-box at the tag in `upstream.ref` + files copied from Leadaxe/sing-box-lx at the commit in `lx.ref` + `overlay/` + `patches/*.patch`. A daily workflow moves the two pins after testing.
 - Stack: Go (the version upstream's workflow installs, 1.26.10 for `v1.15.0-alpha.13`), bash, python3 for the interop test, GitHub Actions.
-- Outputs: Linux `.deb` and `.tar.gz` (amd64, arm64), Windows `.zip` (amd64, arm64), Android arm64-v8a APK, published as prereleases `<upstream tag>-ut`, `-ut.2`, `-ut.3`, … (one per build).
+- Outputs, all named `sing-box_<version>_<os>_<arch>.<ext>` (`_` only between fields; keep it that way, `upsing.sh` and users depend on it): Linux `.deb` and `.tar.gz` (amd64, arm64), Windows `.zip` (amd64, arm64), Android `.apk` (arm64), published as prereleases `<upstream tag>-ut`, `-ut.2`, `-ut.3`, … (one per build).
 
 ## Commands
 

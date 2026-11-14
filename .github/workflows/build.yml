@@ -8,6 +8,10 @@
 #   apk        called by update.yml: build only the Android APK for an existing
 #              release that lacks one, and attach it
 #
+# Release files are all named sing-box_<version>_<os>_<arch>.<ext>: "_" only
+# separates fields (the version itself contains "-"), and it is the Debian
+# convention for .deb files, so official and -ut .deb names have one shape.
+#
 # Jobs: resolve, test, binaries (Linux .deb/.tar.gz, Windows .zip), interop
 # (against Xray), android (APK), promote, release, report (a GitHub issue with
 # the failure details), notify (Telegram).
@@ -248,9 +252,9 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           scripts/package-deb.sh work bin/sing-box "${{ matrix.arch }}" "$VERSION" "dist/sing-box_${VERSION}_linux_${{ matrix.arch }}.deb" bin/libcronet.so
-          # Plain archive, laid out like upstream's: one directory with the binary,
-          # the library the naive outbound loads from beside it, and the license.
-          name="sing-box-${VERSION}-linux-${{ matrix.arch }}"
+          # Plain archive: one directory with the binary, the library the naive
+          # outbound loads from beside it, and the license.
+          name="sing-box_${VERSION}_linux_${{ matrix.arch }}"
           mkdir "$name"
           cp bin/sing-box bin/libcronet.so work/LICENSE "$name/"
           tar -czf "dist/$name.tar.gz" --owner=0 --group=0 "$name"
@@ -261,8 +265,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp work/LICENSE bin/LICENSE
-          (cd bin && zip -q "../dist/sing-box_${VERSION}_windows_${{ matrix.arch }}.zip" sing-box.exe libcronet.dll LICENSE)
+          # Same layout as the Linux archive: one directory, the .exe and the .dll side by side.
+          name="sing-box_${VERSION}_windows_${{ matrix.arch }}"
+          mkdir "$name"
+          cp bin/sing-box.exe bin/libcronet.dll work/LICENSE "$name/"
+          zip -q -r "dist/$name.zip" "$name"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os }}-${{ matrix.arch }}
@@ -385,8 +392,8 @@ jobs:
           ./gradlew --no-daemon :app:assembleOtherRelease
           ls -la app/build/outputs/apk/other/release/
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          suffix=; [ "${{ steps.signing.outputs.signed }}" = throwaway ] && suffix=-UNSIGNED-KEY
-          cp app/build/outputs/apk/other/release/*arm64-v8a*.apk "$GITHUB_WORKSPACE/dist/SFA-${VERSION}-arm64-v8a${suffix}.apk"
+          suffix=; [ "${{ steps.signing.outputs.signed }}" = throwaway ] && suffix=_throwaway-key
+          cp app/build/outputs/apk/other/release/*arm64-v8a*.apk "$GITHUB_WORKSPACE/dist/sing-box_${VERSION}_android_arm64${suffix}.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-android-arm64

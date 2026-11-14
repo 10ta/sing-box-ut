@@ -132,3 +132,4 @@
 - 判断"复制的文件变没变"用 `scripts/lx-diff.sh`：只拉提交和树（不拉文件内容），用同一套 `lx-files.txt` 规则选出两边的文件，比较对象 id。对真实历史验证过：钉住提交对 lx 最新提交是 changed（5 个文件，列出 SPEC 151 那个提交），对中间一个无关提交是 unchanged，耗时约 1 秒。
 - 失败交接：每个变化一个 `auto-update` issue，附失败 job 的错误行和失败那一步结束前 60 行日志。issue 里记录尝试时的 main 提交；main 没变就不重试，修复推上 main 或关闭 issue 就会重试，通过后自动关闭。用真实的 Android 失败日志验证过摘录能抓到 Kotlin 的 `e:` 行和 Gradle 的 "What went wrong"。
 - 预期：上线后第一次运行会在 lx 那一步失败（SPEC 151），然后用桩修。
+- **发布文件命名（2026-11-14）**：统一为 `sing-box_<版本>_<系统>_<架构>.<扩展名>`。用下划线是因为版本号里有横杠，只有下划线分隔字段才能无歧义拆分；也是 Debian 对 .deb 文件名的约定，和官方 .deb 同形，用户的 `upsing.sh` 不用为 ut 改。压缩包里都是一个同名目录；APK 改为 `…_android_arm64.apk`，一次性签名的加 `_throwaway-key`。

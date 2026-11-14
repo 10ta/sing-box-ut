@@ -55,16 +55,16 @@ sing-box version 1.15.0-alpha.13-ut
 
 ## 📦 Installation
 
-Prebuilt files are attached to each [release](https://github.com/10ta/sing-box-ut/releases), one prerelease per build: `<tag>-ut`, then `<tag>-ut.2`, `<tag>-ut.3`, … for later builds of the same sing-box tag. Package managers order them correctly, so the newest one always wins an upgrade.
+Prebuilt files are attached to each [release](https://github.com/10ta/sing-box-ut/releases), one prerelease per build: `<tag>-ut`, then `<tag>-ut.2`, `<tag>-ut.3`, … for later builds of the same sing-box tag. Package managers order them correctly, so the newest one always wins an upgrade. Every file is named `sing-box_<version>_<os>_<arch>.<ext>`.
 
 | File | For |
 |---|---|
 | `sing-box_<version>_linux_amd64.deb`, `…_arm64.deb` | Debian and Ubuntu. Same package name and layout as the official `sing-box` package, which it replaces. Includes `/usr/lib/libcronet.so` for the naive outbound |
-| `sing-box-<version>-linux-amd64.tar.gz`, `…-arm64.tar.gz` | Any Linux with glibc: `sing-box` and `libcronet.so` in one directory, no installation |
-| `sing-box_<version>_windows_amd64.zip`, `…_arm64.zip` | Windows: `sing-box.exe`, plus `libcronet.dll` for the naive outbound (keep both in one folder) |
-| `SFA-<version>-arm64-v8a.apk` | Android (sing-box for Android with the patched core) |
+| `sing-box_<version>_linux_amd64.tar.gz`, `…_arm64.tar.gz` | Any Linux with glibc: `sing-box` and `libcronet.so` in one directory, no installation |
+| `sing-box_<version>_windows_amd64.zip`, `…_arm64.zip` | Windows: one folder with `sing-box.exe` and `libcronet.dll` for the naive outbound (keep them together) |
+| `sing-box_<version>_android_arm64.apk` | Android: sing-box for Android (SFA) with the patched core, for arm64-v8a devices |
 
-The Android app keeps the official application id, so it cannot be installed next to the official SFA, and switching between the two needs an uninstall first. An APK whose name ends in `-UNSIGNED-KEY` was signed with a throwaway key and cannot be updated in place.
+The Android app keeps the official application id, so it cannot be installed next to the official SFA, and switching between the two needs an uninstall first. An APK whose name ends in `_throwaway-key` was signed with a one-off key and cannot be updated in place.
 
 ## 🧭 Usage
 
