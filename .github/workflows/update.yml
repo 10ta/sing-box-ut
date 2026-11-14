@@ -1,0 +1,91 @@
+# Daily update: tries a newer sing-box tag, then a newer sing-box-lx commit, on
+# top of main, and promotes what passes. See scripts/auto-update.sh for the
+# decision and build.yml for the candidate build.
+name: update
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+env:
+  # The sing-box-lx branch that tracks the sing-box minor version in upstream.ref.
+  # When sing-box moves to a new minor version, point this at lx's new branch.
+  LX_BRANCH: lx-1.15
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      upstream_ref: ${{ steps.plan.outputs.upstream_ref }}
+      lx_ref: ${{ steps.plan.outputs.lx_ref }}
+      base_sha: ${{ steps.plan.outputs.base_sha }}
+      subject: ${{ steps.plan.outputs.subject }}
+      body: ${{ steps.plan.outputs.body }}
+      release_tag: ${{ steps.plan.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Decide
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/auto-update.sh
+
+  candidate:
+    name: Candidate
+    needs: plan
+    if: needs.plan.outputs.action == 'candidate'
+    uses: ./.github/workflows/build.yml
+    with:
+      mode: candidate
+      upstream_ref: ${{ needs.plan.outputs.upstream_ref }}
+      lx_ref: ${{ needs.plan.outputs.lx_ref }}
+      base_sha: ${{ needs.plan.outputs.base_sha }}
+      subject: ${{ needs.plan.outputs.subject }}
+      body: ${{ needs.plan.outputs.body }}
+    secrets: inherit
+
+  apk:
+    name: APK backfill
+    needs: plan
+    if: needs.plan.outputs.action == 'apk'
+    uses: ./.github/workflows/build.yml
+    with:
+      mode: apk
+      release_tag: ${{ needs.plan.outputs.release_tag }}
+    secrets: inherit
+
+  plan-failed:
+    name: Report a failed plan
+    needs: plan
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then exit 0; fi
+          text="❌ <b>每日更新没能运行</b>
+
+          检查上游和 lx 这一步出错了，今天没有尝试任何更新。
+          🔗 <a href=\"$RUN_URL\">运行日志</a>"
+          curl -fsS -o /dev/null "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "parse_mode=HTML" \
+            --data-urlencode "disable_web_page_preview=true" --data-urlencode "text=${text}"

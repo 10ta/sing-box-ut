@@ -43,8 +43,8 @@ for c in "${cases[@]}"; do
   echo "== $mode / $scenario"
   python3 "$here/gen.py" "$work" "$mode" "$scenario" "$xray"
   : > "$work/tap.log"
-  "$xray" run -c "$work/server.json" >"$work/xray.log" 2>&1 & server=$!; pids+=($server)
-  "$singbox" run -c "$work/client.json" >"$work/client.log" 2>&1 & client=$!; pids+=($client)
+  "$xray" run -c "$work/server.json" >"$work/xray.log" 2>&1 & server=$!; pids+=("$server")
+  "$singbox" run -c "$work/client.json" >"$work/client.log" 2>&1 & client=$!; pids+=("$client")
   if [ "$scenario" = h3 ]; then sleep 1; else wait_port 6501 || fail "xray did not start"; fi  # h3: UDP only
   wait_port 1080 || fail "sing-box did not start"
   # --noproxy '': a NO_PROXY that lists 127.0.0.1 would make curl skip the SOCKS proxy.

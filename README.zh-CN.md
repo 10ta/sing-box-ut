@@ -37,7 +37,7 @@ Xray 的 XHTTP 可以把上行发到一台服务器、下行发到另一台（`d
 
 ## 🚀 快速开始
 
-在 Linux 上从源码构建。需要 git、bash，以及上游构建所用的 Go 版本（`v1.15.0-alpha.13` 对应 1.26.10）。
+在 Linux 上从源码构建。需要 git、bash、python3，以及上游构建所用的 Go 版本（`v1.15.0-alpha.13` 对应 1.26.10）。
 
 ```bash
 git clone https://github.com/10ta/sing-box-ut
@@ -47,7 +47,7 @@ scripts/build.sh work sing-box
 ./sing-box version
 ```
 
-`prepare.sh` 用最新的 sing-box tag 在 `work/` 里拼出源码。最后一条命令打印版本号，以 `-ut` 结尾：
+`prepare.sh` 用 `upstream.ref` 里的 sing-box tag 和 `lx.ref` 里的 sing-box-lx 提交，在 `work/` 里拼出源码。最后一条命令打印版本号，以 `-ut` 结尾：
 
 ```text
 sing-box version 1.15.0-alpha.13-ut
@@ -55,7 +55,7 @@ sing-box version 1.15.0-alpha.13-ut
 
 ## 📦 安装
 
-编译好的文件挂在每个 [release](https://github.com/10ta/sing-box-ut/releases) 上，每个 sing-box tag 对应一个 prerelease，名为 `<tag>-ut`。
+编译好的文件挂在每个 [release](https://github.com/10ta/sing-box-ut/releases) 上，每次构建一个 prerelease：`<tag>-ut`，同一个 sing-box tag 之后的构建依次为 `<tag>-ut.2`、`<tag>-ut.3`……包管理器能正确排序，升级时总会选到最新的那个。
 
 | 文件 | 用途 |
 |---|---|
@@ -100,7 +100,7 @@ PASS
 
 ```bash
 env GOOS=windows GOARCH=arm64 scripts/build.sh work sing-box.exe
-scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13 sing-box_amd64.deb
+scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 ```
 
 ## 🔧 配置
@@ -206,23 +206,38 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13 sing-box_amd64.deb
 
 ## 🔄 更新与维护
 
-### sing-box 出新 tag
+### 更新是怎么发生的
 
-`build` workflow 每天运行一次，上游有新 tag 而这里还没有对应 release 时就构建并发布。不失败就不用管。失败通常是上游改了 `patches/0001-upstream-seams.patch` 涉及的五个文件之一：对着新 tag 修好补丁再推送。
+`main` 上只放验证通过的组合。两个文件钉住每个提交构建的内容：`upstream.ref`（一个 sing-box tag）和 `lx.ref`（一个 sing-box-lx 提交）。`update` workflow 每天：
 
-### 换用更新的 sing-box-lx
+1. 在 `main` 之上试更新的 sing-box tag。
+2. 试更新的 sing-box-lx 提交。如果本项目复制的文件都没变，只提交新的 `lx.ref`，不构建。
+3. 最新的 release 没有 APK 时，补编 APK。
 
-构建只从 `lx.ref` 里钉住的那一个 sing-box-lx 提交复制文件，因为 lx 的 XHTTP 代码在不断增加对 lx 专有包的依赖。要换提交，先用新的提交或分支试一次：
+试验的变化只有在单元测试、Linux 和 Windows 构建、Xray 互通测试全部通过后，才会成为 `main` 上的提交并发布。失败的不会动 `main` 和已发布的版本，会发一条 Telegram 消息，并开一个标签为 `auto-update` 的 issue，写明试了什么、哪些 job 失败、相关的日志行。sing-box 的更新失败不会挡住 sing-box-lx 的更新，反之亦然。
+
+| Release | 对应的构建 |
+|---|---|
+| `v1.15.0-alpha.13-ut` | 一个 sing-box tag 的第一次构建 |
+| `v1.15.0-alpha.13-ut.2`、`.3`、… | 同一个 tag 的后续构建：sing-box-lx 更新，或本仓库的改动 |
+
+### 更新失败时
+
+把 issue 链接交给修复的人。修复推到 `main` 之后，下一次每日更新会重试同一个变化；关闭 issue 也会让它重试。变化通过后 issue 会自动关闭。不想等一天的话，运行 **Actions → update → Run workflow**。
+
+workflow 会自己往 `main` 提交，所以推送自己的改动前先拉取：
 
 ```bash
-env LX_REF=lx-1.15 scripts/prepare.sh work-next
+git pull --rebase
 ```
 
-如果能编译、`test/interop/run.sh` 也通过，就把那个提交的完整 SHA 写进 `lx.ref`。如果复制来的文件引用了上游没有的包，要么把那个包加进 `lx-files.txt`，要么留在旧的提交上。
+### sing-box 换小版本
+
+sing-box-lx 每个 sing-box 小版本一个分支（目前是 `lx-1.15`）。sing-box 进入下一个小版本后，更新会一直失败，直到把 `.github/workflows/update.yml` 里的 `LX_BRANCH` 改成 lx 的新分支。
 
 ### Xray 出新版本
 
-互通测试钉死了 Xray 版本（workflow 里的 `XRAY_VERSION`），因为服务端默认值会随版本变化。改掉版本号后推送，workflow 会告诉你测试是否还能通过。
+互通测试钉死了 Xray 版本（`build.yml` 里的 `XRAY_VERSION`），因为服务端默认值会随版本变化。改掉版本号后推送，构建会告诉你测试是否还能通过。
 
 ### Secrets
 
@@ -247,6 +262,7 @@ flowchart LR
   D --> X
 ```
 
+- **钉住版本，不靠分支** → `upstream.ref` 和 `lx.ref` 确定每个提交构建什么，每日更新只在全部检查通过后才移动它们，所以 `main` 上始终是测过的组合。
 - **用上游源码，不 fork** → 每次构建都从原样的 sing-box tag 开始，没有合并要维护。文件从 sing-box-lx 复制进来，再用两个小补丁接上。
 - **下行端点就是第二个 XHTTP 客户端** → 请求构造的所有规则（padding、placement、headers、HTTP 版本）直接复用，连接池各用各的。
 - **两条池化连接一起释放** → 连接关闭或失败时，两个池都不会漏掉占用。
@@ -255,6 +271,7 @@ flowchart LR
 
 ```text
 .
+├── upstream.ref              # the sing-box tag the build starts from
 ├── lx.ref                    # the sing-box-lx commit the build copies files from
 ├── lx-files.txt              # which sing-box-lx files are copied
 ├── patches/
@@ -263,15 +280,23 @@ flowchart LR
 ├── overlay/                  # our own files, copied over the tree (libbox build tag)
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
+│   ├── lx-files.py           # applies lx-files.txt to a list of lx paths
 │   ├── build.sh              # compiles sing-box from it
 │   ├── fetch-cronet.sh       # downloads the library the naive outbound needs
 │   ├── package-deb.sh        # packs a .deb
 │   ├── android-client.sh     # checks out the matching Android client
 │   ├── make-keystore.sh      # creates the APK signing keystore, once
-│   └── go-version.sh         # the Go version upstream builds with
+│   ├── go-version.sh         # the Go version upstream builds with
+│   ├── auto-update.sh        # decides what the daily update tries
+│   ├── lx-diff.sh            # did a new lx commit change the copied files?
+│   ├── next-release-tag.sh   # <tag>-ut, <tag>-ut.2, …
+│   ├── report-issue.sh       # the issue opened when a build fails
+│   └── notify-telegram.sh    # the Telegram summary
 ├── test/interop/             # runs the client against a real Xray server
 ├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile
-├── .github/workflows/build.yml
+├── .github/workflows/
+│   ├── build.yml             # test, build, promote to main, release
+│   └── update.yml            # the daily update
 ├── docs/NOTES.zh-CN.md       # research, decisions and pitfalls (Chinese)
 └── AGENTS.md                 # commands and conventions for AI coding agents
 ```
@@ -297,7 +322,7 @@ go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checkli
 
 ## 🔀 上游与差异
 
-用 [SagerNet/sing-box](https://github.com/SagerNet/sing-box) 的最新 tag 构建（已用 `v1.15.0-alpha.13` 验证），文件取自 [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 在 `lx.ref` 里的那个提交。
+用 [SagerNet/sing-box](https://github.com/SagerNet/sing-box) 在 `upstream.ref` 里的 tag 构建（撰写时为 `v1.15.0-alpha.13`），文件取自 [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 在 `lx.ref` 里的那个提交。
 
 | 方面 | sing-box | sing-box-lx | 本仓库 |
 |---|---|---|---|
@@ -306,7 +331,7 @@ go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checkli
 | 下行走另一台服务器 | ❌ | ❌ | ✅ |
 | sing-box-lx 的其他改动 | ❌ | ✅ | ❌ |
 
-与上游的同步是自动的，见[更新与维护](#-更新与维护)。
+与两者的同步都是自动的，见[更新与维护](#-更新与维护)。
 
 ## 📚 文档地图
 

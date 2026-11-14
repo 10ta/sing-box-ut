@@ -1,29 +1,20 @@
-# Builds sing-box-ut from upstream sing-box + sing-box-lx files + patches:
-#   test      vet and unit tests of the patched packages
-#   binaries  Linux .deb (amd64, arm64) and Windows .exe (amd64, arm64)
-#   interop   the Linux amd64 binary against a real Xray server
-#   android   arm64-v8a APK (libbox + sing-box-for-android)
-#   release   a prerelease named <upstream tag>-ut with every artifact
-#   notify    a Telegram summary of every run that built something
-# Runs daily (builds only when upstream has a tag without a release here),
-# on pushes that change the build inputs, and on demand.
+# Builds sing-box-ut from upstream sing-box + sing-box-lx files + patches.
+#
+# Modes:
+#   release    a push to main, or Run workflow: build main and publish it
+#   candidate  called by update.yml with new pins: build them on top of main,
+#              and only if the core checks pass, commit the pins to main
+#              ("promote") and publish. A failed candidate leaves main alone.
+#   apk        called by update.yml: build only the Android APK for an existing
+#              release that lacks one, and attach it
+#
+# Jobs: resolve, test, binaries (Linux .deb/.tar.gz, Windows .zip), interop
+# (against Xray), android (APK), promote, release, report (a GitHub issue with
+# the failure details), notify (Telegram).
+# Core checks = test + binaries + interop. Android never blocks a release.
 name: build
 
 on:
-  workflow_dispatch:
-    inputs:
-      upstream_ref:
-        description: sing-box tag to build (empty = newest)
-        default: ""
-      lx_ref:
-        description: sing-box-lx branch, tag or full commit SHA (empty = lx.ref)
-        default: ""
-      publish:
-        description: Publish a prerelease
-        type: boolean
-        default: true
-  schedule:
-    - cron: "17 4 * * *"
   push:
     branches: [main]
     paths:
@@ -33,14 +24,53 @@ on:
       - test/**
       - lx-files.txt
       - lx.ref
+      - upstream.ref
       - .github/workflows/build.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a release
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      mode:
+        description: candidate | apk
+        type: string
+        required: true
+      upstream_ref:
+        description: "candidate: sing-box tag to try"
+        type: string
+        default: ""
+      lx_ref:
+        description: "candidate: sing-box-lx commit to try"
+        type: string
+        default: ""
+      base_sha:
+        description: "candidate: the main commit the pins go on top of"
+        type: string
+        default: ""
+      subject:
+        description: "candidate: commit subject for the promotion"
+        type: string
+        default: ""
+      body:
+        description: "candidate: commit body (what changed)"
+        type: string
+        default: ""
+      release_tag:
+        description: "apk: the release to complete"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ inputs.mode || 'release' }}-${{ github.ref }}
+  # A newer push supersedes a running release build; a candidate or APK build
+  # is never cancelled half way.
+  cancel-in-progress: ${{ !inputs.mode }}
 
 env:
   # Pinned: Xray changes server defaults between releases. Bump after re-running the interop.
@@ -51,49 +81,100 @@ jobs:
     name: Resolve versions
     runs-on: ubuntu-latest
     outputs:
+      mode: ${{ steps.refs.outputs.mode }}
+      source_sha: ${{ steps.refs.outputs.source_sha }}
       upstream_ref: ${{ steps.refs.outputs.upstream_ref }}
       lx_ref: ${{ steps.refs.outputs.lx_ref }}
-      version: ${{ steps.refs.outputs.version }}
       release_tag: ${{ steps.refs.outputs.release_tag }}
-      build: ${{ steps.refs.outputs.build }}
+      version: ${{ steps.refs.outputs.version }}
+      publish: ${{ steps.refs.outputs.publish }}
+      subject: ${{ steps.refs.outputs.subject }}
+      body: ${{ steps.refs.outputs.body }}
     steps:
       - uses: actions/checkout@v5
-      - name: Resolve refs
+        with:
+          fetch-depth: 0
+      - name: Resolve
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
-          INPUT_LX_REF: ${{ inputs.lx_ref }}
+          MODE: ${{ inputs.mode || 'release' }}
+          PUBLISH: ${{ inputs.publish }}
+          IN_UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          IN_LX_REF: ${{ inputs.lx_ref }}
+          IN_BASE_SHA: ${{ inputs.base_sha }}
+          IN_SUBJECT: ${{ inputs.subject }}
+          IN_BODY: ${{ inputs.body }}
+          IN_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          upstream_ref=$INPUT_UPSTREAM_REF
-          if [ -z "$upstream_ref" ]; then
-            upstream_ref=$(git -c versionsort.suffix=- ls-remote --tags --refs --sort=-v:refname https://github.com/SagerNet/sing-box 'v*' | sed -n '1s#.*refs/tags/##p')
+          case $MODE in
+            release)
+              source_sha=$GITHUB_SHA
+              upstream_ref=$(tr -d '[:space:]' < upstream.ref)
+              lx_ref=$(tr -d '[:space:]' < lx.ref)
+              subject=$(git log -1 --format=%s "$source_sha")
+              body=$(git log -1 --format=%b "$source_sha")
+              ;;
+            candidate)
+              source_sha=$IN_BASE_SHA
+              upstream_ref=$IN_UPSTREAM_REF
+              lx_ref=$IN_LX_REF
+              subject=$IN_SUBJECT
+              body=$IN_BODY
+              ;;
+            apk)
+              release_tag=$IN_RELEASE_TAG
+              source_sha=$(git rev-list -n 1 "refs/tags/$release_tag")
+              # Releases made before upstream.ref existed: the tag name carries it.
+              upstream_ref=$(git show "$source_sha:upstream.ref" 2>/dev/null | tr -d '[:space:]' || true)
+              upstream_ref=${upstream_ref:-${release_tag%-ut*}}
+              lx_ref=$(git show "$source_sha:lx.ref" | tr -d '[:space:]')
+              subject="APK for $release_tag"
+              body=
+              ;;
+            *) echo "::error::unknown mode $MODE"; exit 1 ;;
+          esac
+          if [ "$MODE" != apk ]; then
+            release_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' \
+              | scripts/next-release-tag.sh "$upstream_ref")
           fi
-          [ -n "$upstream_ref" ]
-          lx_ref=${INPUT_LX_REF:-$(tr -d '[:space:]' < lx.ref)}
-          release_tag="${upstream_ref}-ut"
-          build=true
-          # The daily run only builds an upstream tag that has no release here yet.
-          if [ "${{ github.event_name }}" = schedule ] && gh release view "$release_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            build=false
-          fi
+          publish=true
+          [ "$PUBLISH" != false ] || publish=false
           {
+            echo "mode=$MODE"
+            echo "source_sha=$source_sha"
             echo "upstream_ref=$upstream_ref"
             echo "lx_ref=$lx_ref"
-            echo "version=${upstream_ref#v}-ut"
             echo "release_tag=$release_tag"
-            echo "build=$build"
-          } | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
+            echo "version=${release_tag#v}"
+            echo "publish=$publish"
+            echo "subject=$subject"
+            echo "body<<UT_BODY_EOF"
+            printf '%s\n' "$body"
+            echo "UT_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "| | |"
+            echo "|---|---|"
+            echo "| mode | $MODE |"
+            echo "| release | \`$release_tag\` |"
+            echo "| upstream | \`$upstream_ref\` |"
+            echo "| lx | \`$lx_ref\` |"
+            echo "| source | \`$source_sha\` |"
+            echo "| change | $subject |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test:
     name: Vet and unit tests
     needs: resolve
-    if: needs.resolve.outputs.build == 'true'
+    if: needs.resolve.outputs.mode != 'apk'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - name: Prepare source
         env:
           UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
@@ -112,13 +193,16 @@ jobs:
           set -euo pipefail
           tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_xhttp"
           packages="./option/ ./common/badh2/ ./common/lxtrace/ ./common/tls/ ./transport/v2ray/ ./transport/v2rayxhttp/ ./protocol/vless/..."
+          # $packages is a list on purpose.
+          # shellcheck disable=SC2086
           go vet -tags "$tags" $packages
+          # shellcheck disable=SC2086
           go test -count=1 -race -tags "$tags" $packages
 
   binaries:
     name: ${{ matrix.os }}/${{ matrix.arch }}
     needs: resolve
-    if: needs.resolve.outputs.build == 'true'
+    if: needs.resolve.outputs.mode != 'apk'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -131,6 +215,8 @@ jobs:
           - { os: windows, arch: arm64 }
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - name: Prepare source
         env:
           UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
@@ -161,8 +247,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          # The package script appends +ut itself.
-          scripts/package-deb.sh work bin/sing-box "${{ matrix.arch }}" "${VERSION%-ut}" "dist/sing-box_${VERSION}_linux_${{ matrix.arch }}.deb" bin/libcronet.so
+          scripts/package-deb.sh work bin/sing-box "${{ matrix.arch }}" "$VERSION" "dist/sing-box_${VERSION}_linux_${{ matrix.arch }}.deb" bin/libcronet.so
           # Plain archive, laid out like upstream's: one directory with the binary,
           # the library the naive outbound loads from beside it, and the license.
           name="sing-box-${VERSION}-linux-${{ matrix.arch }}"
@@ -192,6 +277,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - uses: actions/download-artifact@v4
         with:
           name: dist-linux-amd64
@@ -215,11 +302,12 @@ jobs:
   android:
     name: Android arm64-v8a
     needs: resolve
-    if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - name: Prepare source
         env:
           UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
@@ -249,7 +337,8 @@ jobs:
         run: |
           set -euo pipefail
           make lib_install
-          export PATH="$PATH:$(go env GOPATH)/bin"
+          gopath=$(go env GOPATH)
+          export PATH="$PATH:$gopath/bin"
           # overlay/cmd/internal/build_libbox/ut_tags.go adds with_xhttp.
           go run ./cmd/internal/build_libbox -target android -platform android/arm64
           mkdir -p clients/android/app/libs
@@ -305,17 +394,59 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  release:
-    name: Publish prerelease
-    needs: [resolve, test, binaries, interop, android]
-    # Android may fail without blocking the other artifacts.
-    if: >-
-      always() && github.event_name != 'pull_request'
-      && (github.event_name != 'workflow_dispatch' || inputs.publish)
-      && needs.test.result == 'success' && needs.binaries.result == 'success' && needs.interop.result == 'success'
+  promote:
+    name: Promote to main
+    needs: [resolve, test, binaries, interop]
+    if: needs.resolve.outputs.mode == 'candidate'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      promoted: ${{ steps.push.outputs.promoted }}
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Commit the pins to main
+        id: push
+        env:
+          BASE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+          LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+          SUBJECT: ${{ needs.resolve.outputs.subject }}
+          BODY: ${{ needs.resolve.outputs.body }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$BASE_SHA" ]; then
+            # main moved while the candidate was built. The next daily run starts
+            # over from the new main; nothing is wrong.
+            echo "::warning::main moved since $BASE_SHA; not promoting"
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$UPSTREAM_REF" > upstream.ref
+          echo "$LX_REF" > lx.ref
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "$SUBJECT" -m "$BODY" -- upstream.ref lx.ref
+          git push origin HEAD:main
+          { echo "promoted=true"; echo "sha=$(git rev-parse HEAD)"; } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Publish prerelease
+    needs: [resolve, test, binaries, interop, android, promote]
+    # Android may fail without blocking the other artifacts.
+    if: >-
+      always() && needs.resolve.outputs.publish == 'true' && (
+        (needs.resolve.outputs.mode == 'release'
+          && needs.test.result == 'success' && needs.binaries.result == 'success' && needs.interop.result == 'success')
+        || (needs.resolve.outputs.mode == 'candidate' && needs.promote.outputs.promoted == 'true')
+        || (needs.resolve.outputs.mode == 'apk' && needs.android.result == 'success')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -325,39 +456,106 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          MODE: ${{ needs.resolve.outputs.mode }}
           TAG: ${{ needs.resolve.outputs.release_tag }}
+          TARGET: ${{ needs.promote.outputs.sha || needs.resolve.outputs.source_sha }}
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+          LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+          SUBJECT: ${{ needs.resolve.outputs.subject }}
+          BODY: ${{ needs.resolve.outputs.body }}
+          ANDROID: ${{ needs.android.result }}
         run: |
           set -euo pipefail
           ls -la dist
-          cat > notes.md <<EOF
-          Built from sing-box \`${{ needs.resolve.outputs.upstream_ref }}\` with the XHTTP client and VLESS encryption of sing-box-lx (\`${{ needs.resolve.outputs.lx_ref }}\`) and the patches of this repository at \`${{ github.sha }}\`.
-
-          Android APK: ${{ needs.android.result }}.
-          EOF
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber --repo "${{ github.repository }}"
-            gh release edit "$TAG" --notes-file notes.md --repo "${{ github.repository }}"
-          else
-            gh release create "$TAG" dist/* --prerelease --title "$TAG" --notes-file notes.md \
-              --target "${{ github.sha }}" --repo "${{ github.repository }}"
+          if [ "$MODE" = apk ]; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+            exit 0
           fi
+          {
+            echo "Built from sing-box \`$UPSTREAM_REF\` with the XHTTP client and VLESS encryption of sing-box-lx (\`$LX_REF\`) and this repository at \`$TARGET\`."
+            echo
+            echo "**Change:** $SUBJECT"
+            if [ -n "$BODY" ]; then echo; echo '```text'; printf '%s\n' "$BODY"; echo '```'; fi
+            echo
+            if [ "$ANDROID" = success ]; then
+              echo "Android APK: included."
+            else
+              echo "Android APK: not built in this run (usually the Android client has not caught up with this sing-box version yet). The daily update retries and attaches it here."
+            fi
+          } > notes.md
+          gh release create "$TAG" dist/* --prerelease --title "$TAG" --notes-file notes.md \
+            --target "$TARGET" --repo "$GITHUB_REPOSITORY"
+      - name: Close the failure issue of this update
+        if: needs.resolve.outputs.mode == 'candidate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "自动更新失败：${{ needs.resolve.outputs.subject }}"
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh issue list --repo "$GITHUB_REPOSITORY" --label auto-update --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" |
+          while read -r number; do
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Passed and released as $TAG."
+          done
+
+  report:
+    name: Report the failure
+    needs: [resolve, test, binaries, interop, promote]
+    if: >-
+      always() && needs.resolve.outputs.mode != 'apk' && (
+        needs.test.result == 'failure' || needs.binaries.result == 'failure'
+        || needs.interop.result == 'failure' || needs.promote.result == 'failure'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    outputs:
+      issue_url: ${{ steps.issue.outputs.url }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - name: Open or update the issue
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+          BASE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+          LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+          SUBJECT: ${{ needs.resolve.outputs.subject }}
+          BODY: ${{ needs.resolve.outputs.body }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/report-issue.sh
 
   notify:
     name: Notify
-    needs: [resolve, test, binaries, interop, android, release]
-    # Every run that built something reports, success or not. A daily run that
-    # found nothing new stays silent.
-    if: always() && needs.resolve.outputs.build == 'true'
+    needs: [resolve, test, binaries, interop, android, promote, release, report]
+    # An APK backfill only reports when it worked; everything else always reports.
+    if: >-
+      always() && (
+        needs.resolve.outputs.mode != 'apk'
+        || (needs.android.result == 'success' && needs.release.result == 'success')
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
       - name: Telegram
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+          PROMOTED: ${{ needs.promote.outputs.promoted }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
           LX_REF: ${{ needs.resolve.outputs.lx_ref }}
+          SUBJECT: ${{ needs.resolve.outputs.subject }}
+          ISSUE_URL: ${{ needs.report.outputs.issue_url }}
           EVENT: ${{ github.event_name }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -365,5 +563,6 @@ jobs:
           R_BINARIES: ${{ needs.binaries.result }}
           R_INTEROP: ${{ needs.interop.result }}
           R_ANDROID: ${{ needs.android.result }}
+          R_PROMOTE: ${{ needs.promote.result }}
           R_RELEASE: ${{ needs.release.result }}
         run: scripts/notify-telegram.sh

@@ -2,10 +2,10 @@
 
 ## Project overview
 
-- sing-box-ut: builds the newest sing-box tag with a native VLESS + XHTTP client and split upload/download servers (Xray `downloadSettings`), so clients can drop xray-core. Human docs: [README.md](README.md). The user works in Chinese; the full decision log is [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md).
-- Type: fork/customization kept as patches, not a fork. Each build is: upstream SagerNet/sing-box at a tag + files copied from Leadaxe/sing-box-lx at the commit in `lx.ref` + `overlay/` + `patches/*.patch`.
+- sing-box-ut: builds a pinned sing-box tag with a native VLESS + XHTTP client and split upload/download servers (Xray `downloadSettings`), so clients can drop xray-core. Human docs: [README.md](README.md). The user works in Chinese; the full decision log is [docs/NOTES.zh-CN.md](docs/NOTES.zh-CN.md).
+- Type: fork/customization kept as patches, not a fork. Each build is: upstream SagerNet/sing-box at the tag in `upstream.ref` + files copied from Leadaxe/sing-box-lx at the commit in `lx.ref` + `overlay/` + `patches/*.patch`. A daily workflow moves the two pins after testing.
 - Stack: Go (the version upstream's workflow installs, 1.26.10 for `v1.15.0-alpha.13`), bash, python3 for the interop test, GitHub Actions.
-- Outputs: Linux `.deb` (amd64, arm64), Windows `.exe` (amd64, arm64), Android arm64-v8a APK, published as a prerelease `<upstream tag>-ut`.
+- Outputs: Linux `.deb` and `.tar.gz` (amd64, arm64), Windows `.zip` (amd64, arm64), Android arm64-v8a APK, published as prereleases `<upstream tag>-ut`, `-ut.2`, `-ut.3`, … (one per build).
 
 ## Commands
 
@@ -13,19 +13,21 @@ Run from the repository root.
 
 | Task | Command |
 |---|---|
-| Assemble the source | `scripts/prepare.sh work` (newest tag; `UPSTREAM_REF=v…` and `LX_REF=…` override) |
+| Assemble the source | `scripts/prepare.sh work` (pins from `upstream.ref`, `lx.ref`; `UPSTREAM_REF=v…` and `LX_REF=…` override) |
 | Build | `scripts/build.sh work sing-box` (cross: set `GOOS`, `GOARCH`) |
 | Vet | in `work/`: `go vet -tags "$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_xhttp" ./option/ ./common/badh2/ ./common/lxtrace/ ./common/tls/ ./transport/v2ray/ ./transport/v2rayxhttp/ ./protocol/vless/...` |
 | Test | same packages with `go test -count=1 -race -tags …` |
 | Single test | in `work/`: `go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./transport/v2rayxhttp/ -run TestDownloadSplit -v` |
 | Interop | `test/interop/run.sh ./sing-box xray-bin/xray` (ends with `PASS`; one case: add `stream-up:h3`) |
-| Pack a .deb | `scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13 out.deb` |
+| Pack a .deb | `scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut out.deb` |
+| Would a new lx commit change the copied files? | `scripts/lx-diff.sh $(cat lx.ref) <new sha>` |
+| Preview the Telegram message / failure issue | `DRY_RUN=1 … scripts/notify-telegram.sh`, `DRY_RUN=1 … scripts/report-issue.sh` (variables listed in each script) |
 | Regenerate the last patch | edit files in `work/`, then `git -C work add -N . && git -C work diff > patches/0002-lx-xhttp-download.patch` |
-| CI | push, or Actions → `build` → Run workflow |
+| CI | push to main (builds and releases), Actions → `build` → Run workflow, Actions → `update` → Run workflow (the daily update, now) |
 
 ## Repository map
 
-- `lx.ref` — full SHA of the sing-box-lx commit files are copied from. `lx-files.txt` — which files (globs, `!` excludes).
+- `upstream.ref` — the sing-box tag. `lx.ref` — full SHA of the sing-box-lx commit files are copied from. Both are moved by the daily update. `lx-files.txt` — which lx files are copied; `scripts/lx-files.py` applies it (used by `prepare.sh` and `lx-diff.sh`).
 - `patches/0001-upstream-seams.patch` — five upstream files: `constant/v2ray.go`, `option/v2ray_transport.go`, `option/vless.go`, `transport/v2ray/transport.go`, `protocol/vless/outbound.go`.
 - `patches/0002-lx-xhttp-download.patch` — the download endpoint, on the copied lx files (`transport/v2rayxhttp/`, `option/v2ray_xhttp*.go`). To change download behaviour, start in `transport/v2rayxhttp/download_ut.go`.
 - `overlay/cmd/internal/build_libbox/ut_tags.go` — appends `with_xhttp` to libbox's tags.
@@ -33,7 +35,8 @@ Run from the repository root.
 - `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
 - `test/naive-start.sh` — checks a build starts a naive outbound (compiled in, library loads).
 - `examples/` — complete sanitized configs. Keep the client in sync with the complete example in both READMEs; validate with `sing-box check` and `xray run -test` after replacing placeholders.
-- `.github/workflows/build.yml` — resolve, test, binaries, interop, android, release, notify.
+- `.github/workflows/build.yml` — modes `release` (push/dispatch), `candidate` and `apk` (called by `update.yml`); jobs resolve, test, binaries, interop, android, promote, release, report, notify.
+- `.github/workflows/update.yml` + `scripts/auto-update.sh` — the daily update. `scripts/report-issue.sh` — the failure issue. `scripts/next-release-tag.sh` — `-ut.N` numbering.
 
 ## Conventions
 
@@ -50,11 +53,16 @@ Run from the repository root.
 - `xmuxRelease.next` chains the download connection's release; every release path must stay idempotent and release both.
 - Build tags: Linux = upstream `DEFAULT_BUILD_TAGS` + `with_purego`, Windows = `DEFAULT_BUILD_TAGS_WINDOWS`, both + `with_xhttp`, `CGO_ENABLED=0`. The naive outbound is compiled in and loads Cronet at run time: next to the binary, `LD_LIBRARY_PATH`, `/usr/local/lib`, `/usr/lib`. The .deb installs `/usr/lib/libcronet.so`; the Windows zip carries `libcronet.dll`.
 - `prepare.sh` stages everything before the last patch, so `git diff` in the tree is exactly that patch. It never commits: libbox reads its version from `git describe`.
-- Package version `X~alpha.N+ut` sorts above the official package of the same tag and below the next one.
+- Package version `X~alpha.N+ut[.M]` sorts above the official package of the same tag, above earlier `-ut` builds, and below the next tag.
+- Daily update order: (1) newer sing-box tag, (2) newer lx commit; the first that needs a build is the run's candidate; (3) otherwise APK backfill for the newest release. An lx move that changes none of the selected files is committed straight to main without a build.
+- A candidate is built from main's scripts with the new pins passed in (no branch is pushed). Only if test, binaries and interop pass does `promote` commit the pins to main, and only if main is still the commit the candidate started from; otherwise it postpones.
+- Failed candidates: one open `auto-update` issue per change (title = `自动更新失败：<subject>`), carrying `<!-- ut-base: SHA -->`. `auto-update.sh` skips a change whose issue records the current main; a new main commit or closing the issue re-enables it. A passing candidate closes its issue.
+- Pushes made with `GITHUB_TOKEN` do not trigger workflows. That is relied on: the promote commit and silent lx bumps must not start a second build.
 
 ## Do not
 
-- Do not follow a moving lx branch in `lx.ref`. lx's XHTTP keeps gaining imports of lx-only packages (`common/lxdatagram` after the pinned commit); bump the pin deliberately and re-run the interop.
+- Do not hand-edit `upstream.ref` or `lx.ref` to an untested value: a push to main releases whatever they say. Let the daily update move them, or test the new value with `UPSTREAM_REF`/`LX_REF` first.
+- Do not try to auto-copy more lx files to satisfy new imports. Tried on 2026-11-13: lx's new code reaches into lx's own config section (`option.Options.LX`), which lives in modified upstream files. Stub the feature instead (an overlay `*_stub.go`).
 - Do not copy `common/lxtrace/*_lx.go` or `protocol/vless/encryption/lx_vision*`: they need lx-only symbols.
 - Do not carry lx's `DialedThroughDetour: tls.DialedThroughDetour(...)` line into the seams patch: the function does not exist upstream.
 - Do not edit upstream's `sharedTags` line in `build_libbox/main.go`; it changes often. Use the overlay file.
@@ -69,8 +77,8 @@ Run from the repository root.
 
 ## Deployment & environments
 
-- Releases are prereleases created by the `build` workflow on GitHub-hosted `ubuntu-latest`: daily for a new upstream tag, on pushes that change build inputs, and on demand.
-- Pinned inputs: lx commit (`lx.ref`), Xray `v26.11.9` (`XRAY_VERSION`), gomobile (upstream's `make lib_install`), the Android client commit (upstream's submodule).
+- Releases are prereleases created by the `build` workflow on GitHub-hosted `ubuntu-latest`: on pushes to main that change build inputs, on demand, and when the daily update promotes a candidate.
+- Pinned inputs: sing-box tag (`upstream.ref`), lx commit (`lx.ref`), lx branch to follow (`LX_BRANCH` in `update.yml`), Xray `v26.11.9` (`XRAY_VERSION` in `build.yml`), gomobile (upstream's `make lib_install`), the Android client (the client's `dev` commit "Bump version <version>").
 
 ## Before you finish
 
@@ -94,6 +102,7 @@ Run from the repository root.
 
 ## Current focus
 
-- 2026-11-13: the pipeline works end to end on Actions: .deb, .tar.gz, Windows zip, Android APK, prerelease, Telegram summary. The user runs the Linux and Android builds against the real two-server deployment behind Caddy; Windows is untested.
-- Open: nothing blocking. Ideas: a separate Android application id, labelled logs for the download endpoint.
-- Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches"; lx pinned.
+- 2026-11-13: daily automatic updates added (pins, candidate builds, promotion, `-ut.N` releases, failure issues, APK backfill). Locally verified: the selector matches the old copy list exactly, `lx-diff.sh` on real lx history, eight `auto-update.sh` scenarios with a fake `gh`, actionlint and shellcheck clean. Not yet run on Actions.
+- Expected first run: lx `lx-1.15` head (df8d8c3) changes `transport/v2rayxhttp/` (SPEC 151 QUIC sniff decoy, needs `common/lxdatagram` and lx's `option.Options.LX`), so the lx candidate fails and opens an issue. Planned fix: stub the decoy (overlay `common/lxdatagram` with a no-op `Decoy`, plus `adapter.OutboundTypeFromContext`).
+- The user runs the Linux and Android builds against the real two-server deployment behind Caddy; Windows is untested.
+- Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches"; both pins moved only by tested promotion.

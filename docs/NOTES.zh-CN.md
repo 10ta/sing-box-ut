@@ -124,3 +124,11 @@
 - **实测结果（2026-11-13，用户）**：Actions 上 deb、exe、APK 都出来了。Linux 和 Android 客户端在真实的双服务器部署（Caddy → h2c → xray）上调通。Windows 待测。
 - **`download` 里不能写 `uuid` / `encryption`**：用户照 xray 的 `downloadSettings` 写了，启动报 `unknown field "uuid"`。原因是一条连接只有一次 VLESS 握手，上下行两半在服务端同一个 inbound 按 session id 拼起来；xray 的 `downloadSettings` 是传输层配置，里面的 `id`、`encryption`、`flow` 本来就被忽略。README 里补了说明。
 - release 多了 Linux 的 `tar.gz`（二进制 + `libcronet.so` + LICENSE）。TG 通知改为每次构建都发，成功失败都发，定时检查没有新 tag 时不发；消息用 HTML 格式（版本号里的 `.` 和 `-` 在 Telegram 的 Markdown 里要逐个转义，HTML 不用）。
+
+## 2026-11-13 更新：每日自动更新
+- 目标是"上游和 lx 更新时合并要省事"。方案和用户一起定的：上游和 lx 都钉住（`upstream.ref`、`lx.ref`），每天先试上游新 tag，再试 lx 新提交，通过全部核心检查才晋升到 main 并发布；同一个 tag 的再次构建发 `-ut.2`、`-ut.3`。Android 不卡晋升，最新 release 缺 APK 时每天补编。
+- **自动补缺不做（实测否决）**：用 lx 最新提交模拟"缺什么就从 lx 补只存在于 lx 的文件"：`common/lxdatagram` → `adapter/carrier_lx.go`、`option/lx.go` → `option/lx.go` 需要上游 `option.Options` 里的 `LX` 字段（lx 改了上游原文件）。补文件补不出来。正确修法是给不要的 lx 功能写桩。
+- **没有推真实的 `next` 分支**：最初定的是"试验分支叫 next"。实现时改成在同一次运行里用 main 的脚本加新的钉值去构建，通过后由 `promote` 直接往 main 提交钉值文件。原因：用 `GITHUB_TOKEN` 推送一个分支时，如果推送范围里有改动 workflow 文件的提交，GitHub 可能拒绝（`GITHUB_TOKEN` 拿不到 `workflows` 权限），这个行为我没法事先验证；另外少一个会被并发推送弄乱的分支。效果和原方案一致：失败不碰 main。
+- 判断"复制的文件变没变"用 `scripts/lx-diff.sh`：只拉提交和树（不拉文件内容），用同一套 `lx-files.txt` 规则选出两边的文件，比较对象 id。对真实历史验证过：钉住提交对 lx 最新提交是 changed（5 个文件，列出 SPEC 151 那个提交），对中间一个无关提交是 unchanged，耗时约 1 秒。
+- 失败交接：每个变化一个 `auto-update` issue，附失败 job 的错误行和失败那一步结束前 60 行日志。issue 里记录尝试时的 main 提交；main 没变就不重试，修复推上 main 或关闭 issue 就会重试，通过后自动关闭。用真实的 Android 失败日志验证过摘录能抓到 Kotlin 的 `e:` 行和 Gradle 的 "What went wrong"。
+- 预期：上线后第一次运行会在 lx 那一步失败（SPEC 151），然后用桩修。

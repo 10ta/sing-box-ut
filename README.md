@@ -37,7 +37,7 @@ Xray's XHTTP can send uploads to one server and downloads to another (`downloadS
 
 ## 🚀 Quick Start
 
-Build from source on Linux. Needs git, bash and the Go version upstream builds with (1.26.10 for `v1.15.0-alpha.13`).
+Build from source on Linux. Needs git, bash, python3 and the Go version upstream builds with (1.26.10 for `v1.15.0-alpha.13`).
 
 ```bash
 git clone https://github.com/10ta/sing-box-ut
@@ -47,7 +47,7 @@ scripts/build.sh work sing-box
 ./sing-box version
 ```
 
-`prepare.sh` assembles the source in `work/` from the newest sing-box tag. The last command prints the version, which ends in `-ut`:
+`prepare.sh` assembles the source in `work/` from the sing-box tag in `upstream.ref` and the sing-box-lx commit in `lx.ref`. The last command prints the version, which ends in `-ut`:
 
 ```text
 sing-box version 1.15.0-alpha.13-ut
@@ -55,7 +55,7 @@ sing-box version 1.15.0-alpha.13-ut
 
 ## 📦 Installation
 
-Prebuilt files are attached to each [release](https://github.com/10ta/sing-box-ut/releases), one prerelease per sing-box tag, named `<tag>-ut`.
+Prebuilt files are attached to each [release](https://github.com/10ta/sing-box-ut/releases), one prerelease per build: `<tag>-ut`, then `<tag>-ut.2`, `<tag>-ut.3`, … for later builds of the same sing-box tag. Package managers order them correctly, so the newest one always wins an upgrade.
 
 | File | For |
 |---|---|
@@ -100,7 +100,7 @@ PASS
 
 ```bash
 env GOOS=windows GOARCH=arm64 scripts/build.sh work sing-box.exe
-scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13 sing-box_amd64.deb
+scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 ```
 
 ## 🔧 Configuration
@@ -206,23 +206,38 @@ Why `download` has no `uuid` or `encryption`: the two servers carry the two halv
 
 ## 🔄 Update & Maintenance
 
-### A new sing-box tag
+### How updates happen
 
-The `build` workflow runs daily, and builds and publishes when upstream has a tag without a release here. Nothing to do unless it fails. A failure usually means upstream changed one of the five files `patches/0001-upstream-seams.patch` touches: fix the patch against the new tag and push.
+`main` only holds combinations that passed. Two files pin what each commit builds: `upstream.ref` (a sing-box tag) and `lx.ref` (a sing-box-lx commit). Every day the `update` workflow:
 
-### A newer sing-box-lx
+1. Tries a newer sing-box tag on top of `main`.
+2. Tries a newer sing-box-lx commit. If none of the files this project copies changed, it only commits the new `lx.ref`, without a build.
+3. Builds the APK of the newest release if that release has none.
 
-The build copies files from the one sing-box-lx commit pinned in `lx.ref`, because lx's XHTTP code keeps gaining dependencies on lx-only packages. To move the pin, try the new commit or branch first:
+A tried change becomes a commit on `main` and a release only when the unit tests, the Linux and Windows builds and the Xray interop test pass. A failed one leaves `main` and the releases untouched, sends a Telegram message, and opens an issue labelled `auto-update` with what was tried, the failed jobs and their relevant log lines. A failed sing-box update does not hold back a sing-box-lx update, and the other way round.
+
+| Release | Built for |
+|---|---|
+| `v1.15.0-alpha.13-ut` | the first build of a sing-box tag |
+| `v1.15.0-alpha.13-ut.2`, `.3`, … | later builds of the same tag: a sing-box-lx update, or a change to this repository |
+
+### When an update fails
+
+Hand the issue's link to whoever fixes the build. Once the fix is on `main`, the next daily run retries the same change; closing the issue makes it retry as well. The issue closes itself when the change passes. To retry without waiting a day, run **Actions → update → Run workflow**.
+
+The workflow commits to `main` itself, so pull before pushing your own changes:
 
 ```bash
-env LX_REF=lx-1.15 scripts/prepare.sh work-next
+git pull --rebase
 ```
 
-If the tree builds and `test/interop/run.sh` passes, write the commit's full SHA into `lx.ref`. If a copied file now imports a package upstream does not have, add that package to `lx-files.txt` or stay on the old pin.
+### A new sing-box minor version
+
+sing-box-lx keeps one branch per sing-box minor version (`lx-1.15` now). When sing-box moves to the next minor version, the update fails until `LX_BRANCH` in `.github/workflows/update.yml` names lx's new branch.
 
 ### A new Xray version
 
-The interop test pins Xray (`XRAY_VERSION` in the workflow) because server defaults change between releases. Change the pin and push; the workflow shows whether the test still passes.
+The interop test pins Xray (`XRAY_VERSION` in `build.yml`) because server defaults change between releases. Change the pin and push; the build shows whether the test still passes.
 
 ### Secrets
 
@@ -247,6 +262,7 @@ flowchart LR
   D --> X
 ```
 
+- **Pins, not branches** → `upstream.ref` and `lx.ref` fix what every commit builds, and the daily update moves them only after the full checks pass, so `main` is always a tested combination.
 - **Upstream source, not a fork** → every build starts from the untouched sing-box tag, so there is no merge to maintain. Files are copied in from sing-box-lx, and two small patches connect them.
 - **The download endpoint is a second XHTTP client** → it reuses every request-shaping rule (padding, placement, headers, HTTP version) and gets its own connection pool.
 - **Both pooled connections are released together** → a closed or failed connection can never leak a slot in either pool.
@@ -255,6 +271,7 @@ flowchart LR
 
 ```text
 .
+├── upstream.ref              # the sing-box tag the build starts from
 ├── lx.ref                    # the sing-box-lx commit the build copies files from
 ├── lx-files.txt              # which sing-box-lx files are copied
 ├── patches/
@@ -263,15 +280,23 @@ flowchart LR
 ├── overlay/                  # our own files, copied over the tree (libbox build tag)
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
+│   ├── lx-files.py           # applies lx-files.txt to a list of lx paths
 │   ├── build.sh              # compiles sing-box from it
 │   ├── fetch-cronet.sh       # downloads the library the naive outbound needs
 │   ├── package-deb.sh        # packs a .deb
 │   ├── android-client.sh     # checks out the matching Android client
 │   ├── make-keystore.sh      # creates the APK signing keystore, once
-│   └── go-version.sh         # the Go version upstream builds with
+│   ├── go-version.sh         # the Go version upstream builds with
+│   ├── auto-update.sh        # decides what the daily update tries
+│   ├── lx-diff.sh            # did a new lx commit change the copied files?
+│   ├── next-release-tag.sh   # <tag>-ut, <tag>-ut.2, …
+│   ├── report-issue.sh       # the issue opened when a build fails
+│   └── notify-telegram.sh    # the Telegram summary
 ├── test/interop/             # runs the client against a real Xray server
 ├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile
-├── .github/workflows/build.yml
+├── .github/workflows/
+│   ├── build.yml             # test, build, promote to main, release
+│   └── update.yml            # the daily update
 ├── docs/NOTES.zh-CN.md       # research, decisions and pitfalls (Chinese)
 └── AGENTS.md                 # commands and conventions for AI coding agents
 ```
@@ -297,7 +322,7 @@ Both test packages report `ok`. To change the download logic, edit the files in 
 
 ## 🔀 Upstream & Differences
 
-Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at its newest tag (verified with `v1.15.0-alpha.13`), with files from [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) at the commit in `lx.ref`.
+Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at the tag in `upstream.ref` (`v1.15.0-alpha.13` at the time of writing), with files from [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) at the commit in `lx.ref`.
 
 | Aspect | sing-box | sing-box-lx | This repository |
 |---|---|---|---|
@@ -306,7 +331,7 @@ Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at its newe
 | Download through another server | ❌ | ❌ | ✅ |
 | Everything else in sing-box-lx | ❌ | ✅ | ❌ |
 
-Sync with upstream is automatic, see [Update & Maintenance](#-update--maintenance).
+Sync with both is automatic, see [Update & Maintenance](#-update--maintenance).
 
 ## 📚 Documentation
 

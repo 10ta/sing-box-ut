@@ -6,7 +6,9 @@
 # usage: scripts/package-deb.sh TREE BINARY DEB_ARCH VERSION OUT_DEB [LIBCRONET_SO]
 #   TREE      prepared source tree (scripts/prepare.sh output)
 #   DEB_ARCH  amd64 | arm64
-#   VERSION   e.g. 1.15.0-alpha.13 (the package version becomes 1.15.0~alpha.13+ut)
+#   VERSION   release version, e.g. 1.15.0-alpha.13-ut.2; the package version
+#             becomes 1.15.0~alpha.13+ut.2, which sorts after the official package
+#             of the same tag and after earlier -ut builds
 #   LIBCRONET_SO  optional; installed as /usr/lib/libcronet.so, where the naive
 #                 outbound looks for it
 set -euo pipefail
@@ -33,9 +35,15 @@ done < "$spec"
 if [ ${#conffiles[@]} -gt 0 ]; then printf '%s\n' "${conffiles[@]}" > "$stage/DEBIAN/conffiles"; fi
 if [ -n "$postinst" ]; then install -m755 "$tree/$postinst" "$stage/DEBIAN/postinst"; fi
 
+case $version in
+  *-ut*) upstream_version=${version%-ut*}; build=ut${version##*-ut} ;;
+  *) echo "package-deb: VERSION must end in -ut or -ut.N: $version" >&2; exit 1 ;;
+esac
+deb_version="${upstream_version//-/\~}+$build"
+
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: sing-box
-Version: ${version//-/\~}+ut
+Version: $deb_version
 Architecture: $arch
 Maintainer: 10ta <84114181+10ta@users.noreply.github.com>
 Installed-Size: $(du -sk --exclude=DEBIAN "$stage" | cut -f1)

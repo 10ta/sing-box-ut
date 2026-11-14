@@ -7,7 +7,7 @@
 #
 # usage: scripts/prepare.sh [OUT_DIR]          (default: work)
 # environment:
-#   UPSTREAM_REF   sing-box tag or branch; default: the newest v* tag
+#   UPSTREAM_REF   sing-box tag or branch; default: the tag pinned in upstream.ref
 #   LX_REF         sing-box-lx branch, tag or full commit SHA; default: the commit pinned in lx.ref
 #   UPSTREAM_REPO, LX_REPO   override the clone URLs
 # Prints the resolved refs and writes them to OUT_DIR/.ut-refs.
@@ -16,13 +16,8 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:-work}
 UPSTREAM_REPO=${UPSTREAM_REPO:-https://github.com/SagerNet/sing-box}
 LX_REPO=${LX_REPO:-https://github.com/Leadaxe/sing-box-lx}
+UPSTREAM_REF=${UPSTREAM_REF:-$(tr -d '[:space:]' < "$root/upstream.ref")}
 LX_REF=${LX_REF:-$(tr -d '[:space:]' < "$root/lx.ref")}
-
-if [ -z "${UPSTREAM_REF:-}" ]; then
-  # versionsort.suffix makes v1.15.0-alpha.13 sort before v1.15.0, as it should.
-  UPSTREAM_REF=$(git -c versionsort.suffix=- ls-remote --tags --refs --sort=-v:refname "$UPSTREAM_REPO" 'v*' | sed -n '1s#.*refs/tags/##p')
-  [ -n "$UPSTREAM_REF" ] || { echo "prepare: cannot find an upstream tag" >&2; exit 1; }
-fi
 
 [ ! -e "$out" ] || { echo "prepare: $out already exists, remove it first" >&2; exit 1; }
 lx=$(mktemp -d)
@@ -39,34 +34,15 @@ lx_sha=$(git -C "$lx" rev-parse HEAD)
 
 echo ".ut-refs" >> "$out/.git/info/exclude"
 
-# Copy the lx files.
-includes=(); excludes=()
-while IFS= read -r line; do
-  line=${line%%#*}; line=${line//[[:space:]]/}
-  [ -n "$line" ] || continue
-  if [[ $line == !* ]]; then excludes+=("${line#!}"); else includes+=("$line"); fi
-done < "$root/lx-files.txt"
-
+# Copy the lx files lx-files.txt selects.
+files=$(git -C "$lx" ls-files | python3 "$root/scripts/lx-files.py" "$root/lx-files.txt") ||
+  { echo "prepare: lx-files.txt does not fit lx $LX_REF" >&2; exit 1; }
 copied=0
-for pattern in "${includes[@]}"; do
-  [[ $pattern == */ ]] && pattern="${pattern}*.go"
-  matched=0
-  for src in "$lx"/$pattern; do
-    [ -f "$src" ] || continue
-    name=$(basename "$src"); skip=0
-    for ex in ${excludes[@]+"${excludes[@]}"}; do
-      # shellcheck disable=SC2254
-      case $name in $ex) skip=1 ;; esac
-    done
-    [ "$skip" -eq 0 ] || continue
-    rel=${src#"$lx"/}
-    mkdir -p "$out/$(dirname "$rel")"
-    cp "$src" "$out/$rel"
-    matched=$((matched + 1))
-  done
-  [ "$matched" -gt 0 ] || { echo "prepare: lx-files.txt: nothing matches $pattern in lx $LX_REF" >&2; exit 1; }
-  copied=$((copied + matched))
-done
+while IFS= read -r rel; do
+  mkdir -p "$out/$(dirname "$rel")"
+  cp "$lx/$rel" "$out/$rel"
+  copied=$((copied + 1))
+done <<< "$files"
 echo "prepare: copied $copied files from lx"
 
 # Our own files.
