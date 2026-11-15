@@ -133,3 +133,11 @@
 - 失败交接：每个变化一个 `auto-update` issue，附失败 job 的错误行和失败那一步结束前 60 行日志。issue 里记录尝试时的 main 提交；main 没变就不重试，修复推上 main 或关闭 issue 就会重试，通过后自动关闭。用真实的 Android 失败日志验证过摘录能抓到 Kotlin 的 `e:` 行和 Gradle 的 "What went wrong"。
 - 预期：上线后第一次运行会在 lx 那一步失败（SPEC 151），然后用桩修。
 - **发布文件命名（2026-11-14）**：统一为 `sing-box_<版本>_<系统>_<架构>.<扩展名>`。用下划线是因为版本号里有横杠，只有下划线分隔字段才能无歧义拆分；也是 Debian 对 .deb 文件名的约定，和官方 .deb 同形，用户的 `upsing.sh` 不用为 ut 改。压缩包里都是一个同名目录；APK 改为 `…_android_arm64.apk`，一次性签名的加 `_throwaway-key`。
+
+## 2026-11-15：第一次自动更新失败与修复
+- 每日更新按设计工作：试 lx `797433f`，失败，main 未动，开了 issue #1，发了 TG。
+- 失败原因：lx 改了 `conn.go` 里我们补丁上下文的那一行（`connCtx` 加了 `sniffGuardRequestContext`），`0002` 打不上；同时 lx 的 XHTTP 开始调用 lx.sniff_guard（`common/lxsniffguard`、`common/lxdatagram`、`adapter` 的 carrier 函数），这些都依赖 lx 自己的 `lx` 配置段。
+- 修法：给这几个 lx 专有 API 写桩（`overlay/` 下），一律返回 nil 或原样透传。lx 自己就把 nil 的 guard、node、attempt 当作"功能关闭"，所以行为等同于 lx 不开 sniff_guard。`sniff_guard_lx_test.go` 需要真实实现，在 `lx-files.txt` 里排除。`0002` 只是上下文跟着 lx 变了，改动行不变。
+- 验证：vet、`-race` 单元测试、6 个互通用例（含经过桩的 H3）、naive 启动、Windows/Android 交叉编译。整树和从仓库重新 prepare 的结果逐字节一致。
+- 顺带发现：lx 自带的 `TestHTTP1PacketUp` 在多个包并行加 `-race` 时偶发失败（检查连接复用，对时序敏感），单独跑 40 次、整包跑 6 次都通过，旧钉住版本同样。CI 的测试改为失败后重跑一次。
+- issue 里每个 job 都写着"日志不可用"：`report-issue.sh` 取 job 日志失败，原因被丢掉了，不确定是日志尚未就绪还是权限。现在会重试 4 次（间隔 15 秒）、写明失败的步骤名（这个不需要日志），取不到时把错误原文写进 issue。

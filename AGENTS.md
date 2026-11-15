@@ -31,6 +31,7 @@ Run from the repository root.
 - `patches/0001-upstream-seams.patch` — five upstream files: `constant/v2ray.go`, `option/v2ray_transport.go`, `option/vless.go`, `transport/v2ray/transport.go`, `protocol/vless/outbound.go`.
 - `patches/0002-lx-xhttp-download.patch` — the download endpoint, on the copied lx files (`transport/v2rayxhttp/`, `option/v2ray_xhttp*.go`). To change download behaviour, start in `transport/v2rayxhttp/download_ut.go`.
 - `overlay/cmd/internal/build_libbox/ut_tags.go` — appends `with_xhttp` to libbox's tags.
+- `overlay/common/lxsniffguard/`, `overlay/common/lxdatagram/`, `overlay/adapter/carrier_ut.go` — stubs of lx-only APIs the copied XHTTP code calls. They return nil / pass through, which sing-box-lx itself treats as "feature off", so behaviour equals lx with that feature unset. When lx's XHTTP gains a call into another lx-only package, add the symbol here (and exclude lx tests that need the real thing via `!name` in `lx-files.txt`).
 - `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `fetch-cronet.sh` — prebuilt `libcronet.so` / `.dll` for the naive outbound. `make-keystore.sh` — one-time APK signing key. `notify-telegram.sh` — the build summary message (`DRY_RUN=1` prints it). `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
 - `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
 - `test/naive-start.sh` — checks a build starts a naive outbound (compiled in, library loads).
@@ -62,7 +63,7 @@ Run from the repository root.
 ## Do not
 
 - Do not hand-edit `upstream.ref` or `lx.ref` to an untested value: a push to main releases whatever they say. Let the daily update move them, or test the new value with `UPSTREAM_REF`/`LX_REF` first.
-- Do not try to auto-copy more lx files to satisfy new imports. Tried on 2026-11-13: lx's new code reaches into lx's own config section (`option.Options.LX`), which lives in modified upstream files. Stub the feature instead (an overlay `*_stub.go`).
+- Do not try to auto-copy more lx files to satisfy new imports. Tried on 2026-11-13: lx's new code reaches into lx's own config section (`option.Options.LX`), which lives in modified upstream files. Stub the feature instead.
 - Do not copy `common/lxtrace/*_lx.go` or `protocol/vless/encryption/lx_vision*`: they need lx-only symbols.
 - Do not carry lx's `DialedThroughDetour: tls.DialedThroughDetour(...)` line into the seams patch: the function does not exist upstream.
 - Do not edit upstream's `sharedTags` line in `build_libbox/main.go`; it changes often. Use the overlay file.
@@ -102,7 +103,7 @@ Run from the repository root.
 
 ## Current focus
 
-- 2026-11-13: daily automatic updates added (pins, candidate builds, promotion, `-ut.N` releases, failure issues, APK backfill). Locally verified: the selector matches the old copy list exactly, `lx-diff.sh` on real lx history, eight `auto-update.sh` scenarios with a fake `gh`, actionlint and shellcheck clean. Not yet run on Actions.
-- Expected first run: lx `lx-1.15` head (df8d8c3) changes `transport/v2rayxhttp/` (SPEC 151 QUIC sniff decoy, needs `common/lxdatagram` and lx's `option.Options.LX`), so the lx candidate fails and opens an issue. Planned fix: stub the decoy (overlay `common/lxdatagram` with a no-op `Decoy`, plus `adapter.OutboundTypeFromContext`).
+- 2026-11-15: the first daily run tried lx `797433f` and failed as expected (issue #1): lx changed a context line of `conn.go`, and its XHTTP now calls lx.sniff_guard (`common/lxsniffguard`, `common/lxdatagram`, `adapter` carrier helpers). Fixed by stubs in `overlay/` and a rebased `0002`; `lx.ref` moved to `797433f`. Verified locally: vet, tests with -race, all six interop cases, naive start, cross-compile for windows/android.
+- The log fetch of `report-issue.sh` returned nothing in that run; the cause is unknown (the error was discarded). It now retries, names the failed step, and writes the fetch error into the issue. Check the next issue it opens.
 - The user runs the Linux and Android builds against the real two-server deployment behind Caddy; Windows is untested.
-- Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches"; both pins moved only by tested promotion.
+- Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches"; both pins moved only by tested promotion; lx-only features reached from copied files are stubbed, never copied.

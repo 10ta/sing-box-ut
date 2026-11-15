@@ -22,3 +22,5 @@ common/lxtrace/*_stub*.go
 protocol/vless/encryption/
 protocol/vless/lx_encryption.go
 !lx_vision*
+# Needs the real lx.sniff_guard (overlay/common/lxsniffguard is a stub).
+!sniff_guard_lx_test.go

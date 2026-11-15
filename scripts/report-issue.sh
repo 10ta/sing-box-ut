@@ -25,7 +25,7 @@ fi
 
 excerpt() { # job log on stdin -> the lines worth reading
   # Drop timestamps and colour codes, and the commands GitHub echoes.
-  sed -E -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' -e 's/\x1b\[[0-9;]*m//g' |
+  sed -E -e 's/^\xEF\xBB\xBF//' -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' -e 's/\x1b\[[0-9;]*m//g' |
     grep -v -E '^\[36;1m|^##\[(group|endgroup)\]' > "$tmp/log" || true
   # The step that failed ends at the first "##[error]"; read up to there.
   local end
@@ -47,19 +47,40 @@ excerpt() { # job log on stdin -> the lines worth reading
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+job_section() { # NAME FAILED_STEPS TEXT
+  printf '\n#### %s\n失败的步骤：%s\n```text\n%s\n```\n' "$1" "${2:-?}" "$3"
+}
+
+fetch_log() { # JOB_ID -> the job log; a job's log can lag behind its result, so retry
+  local attempt
+  for attempt in 1 2 3 4; do
+    if gh api "repos/$repo/actions/jobs/$1/logs" > "$tmp/job.log" 2> "$tmp/job.err"; then
+      return 0
+    fi
+    [ "$attempt" = 4 ] || sleep 15
+  done
+  return 1
+}
+
 failed=""
 if [ "${DRY_RUN:-}" = 1 ]; then
   for pair in ${FAKE_JOB_LOGS:-}; do
     name=${pair%%=*}; file=${pair#*=}
-    failed+=$'\n'"#### $name"$'\n```text\n'"$(excerpt < "$file")"$'\n```\n'
+    failed+=$(job_section "$name" "${FAKE_FAILED_STEP:-}" "$(excerpt < "$file")")
   done
 else
-  while IFS=$'\t' read -r id name; do
+  while IFS=$'\t' read -r id name steps; do
     [ -n "$id" ] || continue
-    log=$(gh api "repos/$repo/actions/jobs/$id/logs" 2>/dev/null || echo "(log not available)")
-    failed+=$'\n'"#### $name"$'\n```text\n'"$(printf '%s\n' "$log" | excerpt)"$'\n```\n'
+    if fetch_log "$id"; then
+      text=$(excerpt < "$tmp/job.log")
+    else
+      # Say why, so a broken log fetch is fixed instead of guessed at.
+      text="(log not available: $(head -c 300 "$tmp/job.err" | tr '\n' ' '))"
+    fi
+    failed+=$(job_section "$name" "$steps" "$text")
   done < <(gh api "repos/$repo/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-    --jq '.jobs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"')
+    --jq '.jobs[] | select(.conclusion == "failure")
+      | "\(.id)\t\(.name)\t\([.steps[]? | select(.conclusion == "failure") | .name] | join(", "))"')
 fi
 [ -n "$failed" ] || failed=$'\n(no failed job found; see the run)\n'
 

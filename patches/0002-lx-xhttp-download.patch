@@ -1,5 +1,5 @@
 diff --git a/option/v2ray_xhttp.go b/option/v2ray_xhttp.go
-index fa772ae15..806b2a735 100644
+index fa772ae..806b2a7 100644
 --- a/option/v2ray_xhttp.go
 +++ b/option/v2ray_xhttp.go
 @@ -49,6 +49,10 @@ type V2RayXHTTPOptions struct {
@@ -15,7 +15,7 @@ index fa772ae15..806b2a735 100644
  	// SessionPlacement selects where the session id is carried on every request:
 diff --git a/option/v2ray_xhttp_download_ut.go b/option/v2ray_xhttp_download_ut.go
 new file mode 100644
-index 000000000..5f84a0cc5
+index 0000000..5f84a0c
 --- /dev/null
 +++ b/option/v2ray_xhttp_download_ut.go
 @@ -0,0 +1,26 @@
@@ -46,10 +46,10 @@ index 000000000..5f84a0cc5
 +	V2RayXHTTPOptions
 +}
 diff --git a/transport/v2rayxhttp/client.go b/transport/v2rayxhttp/client.go
-index d9b33628d..7112db291 100644
+index 378801e..4b4b9d0 100644
 --- a/transport/v2rayxhttp/client.go
 +++ b/transport/v2rayxhttp/client.go
-@@ -81,6 +81,9 @@ type Client struct {
+@@ -82,6 +82,9 @@ type Client struct {
  	// serverName is the TLS server name, the subject of the REUSED `tls` stage a
  	// connection test records for a pooled transport (lx: SPEC 139).
  	serverName string
@@ -59,7 +59,7 @@ index d9b33628d..7112db291 100644
  }
  
  // NewClient builds an XHTTP client transport. The tlsConfig (possibly Reality)
-@@ -97,6 +100,15 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
+@@ -98,6 +101,15 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
  	default:
  		return nil, E.New("v2ray-xhttp: unknown mode: ", mode)
  	}
@@ -75,7 +75,7 @@ index d9b33628d..7112db291 100644
  
  	paddingRange, err := parseRangeOr(options.XPaddingBytes, "x_padding_bytes", intRange{100, 1000})
  	if err != nil {
-@@ -235,7 +247,17 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
+@@ -238,7 +250,17 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
  		}
  	}
  
@@ -93,7 +93,7 @@ index d9b33628d..7112db291 100644
  		ctx:            ctx,
  		dialer:         dialer,
  		serverAddr:     serverAddr,
-@@ -310,6 +332,9 @@ func (c *Client) dialMode(ctx context.Context, sessionID string, xmuxClient *xmu
+@@ -313,6 +335,9 @@ func (c *Client) dialMode(ctx context.Context, sessionID string, xmuxClient *xmu
  
  func (c *Client) Close() error {
  	c.xmux.Close()
@@ -104,12 +104,12 @@ index d9b33628d..7112db291 100644
  }
  
 diff --git a/transport/v2rayxhttp/conn.go b/transport/v2rayxhttp/conn.go
-index 8d5ededee..bd8dce714 100644
+index f19b555..0f9bbcf 100644
 --- a/transport/v2rayxhttp/conn.go
 +++ b/transport/v2rayxhttp/conn.go
 @@ -191,7 +191,14 @@ func (c *Client) dialStreamUp(ctx context.Context, sessionID string, xmuxClient
  	// lx: SPEC 072 — conn-scoped request context; see dialStreamOne.
- 	connCtx, connCancel := context.WithCancel(trace.requestContext(c.transportContext())) // lx: SPEC 139 — the trace, not the dial's cancellation
+ 	connCtx, connCancel := context.WithCancel(sniffGuardRequestContext(ctx, trace.requestContext(c.transportContext()))) // lx: SPEC 139, 060 — the trace and the sniff guard attempt, not the dial's cancellation
  	// Download: GET response body (no seq — stream mode).
 -	downReq, err := c.newRequest(connCtx, http.MethodGet, sessionID, "", nil)
 +	// ut: downloadSettings — the GET is shaped by and sent over the download
@@ -135,7 +135,7 @@ index 8d5ededee..bd8dce714 100644
  			conn.fail(E.Cause(err, "open download"))
 @@ -287,7 +295,13 @@ func (c *Client) dialPacketUp(ctx context.Context, sessionID string, xmuxClient
  	_ = ctx
- 	connCtx, connCancel := context.WithCancel(trace.requestContext(c.transportContext())) // lx: SPEC 139 — the trace, not the dial's cancellation
+ 	connCtx, connCancel := context.WithCancel(sniffGuardRequestContext(ctx, trace.requestContext(c.transportContext()))) // lx: SPEC 139, 060 — the trace and the sniff guard attempt, not the dial's cancellation
  	// Download stream: GET with the session id but no seq (downlink).
 -	downReq, err := c.newRequest(connCtx, http.MethodGet, sessionID, "", nil)
 +	// ut: downloadSettings — see dialStreamUp.
@@ -175,7 +175,7 @@ index 8d5ededee..bd8dce714 100644
  
 diff --git a/transport/v2rayxhttp/download_ut.go b/transport/v2rayxhttp/download_ut.go
 new file mode 100644
-index 000000000..6eb8b6f5c
+index 0000000..6eb8b6f
 --- /dev/null
 +++ b/transport/v2rayxhttp/download_ut.go
 @@ -0,0 +1,119 @@
@@ -300,7 +300,7 @@ index 000000000..6eb8b6f5c
 +}
 diff --git a/transport/v2rayxhttp/download_ut_test.go b/transport/v2rayxhttp/download_ut_test.go
 new file mode 100644
-index 000000000..cb5ae40fc
+index 0000000..cb5ae40
 --- /dev/null
 +++ b/transport/v2rayxhttp/download_ut_test.go
 @@ -0,0 +1,270 @@
@@ -575,7 +575,7 @@ index 000000000..cb5ae40fc
 +	}
 +}
 diff --git a/transport/v2rayxhttp/xmux.go b/transport/v2rayxhttp/xmux.go
-index a1d6c02c0..97eb7c57f 100644
+index a1d6c02..97eb7c5 100644
 --- a/transport/v2rayxhttp/xmux.go
 +++ b/transport/v2rayxhttp/xmux.go
 @@ -206,6 +206,9 @@ func (c *xmuxClient) roundTrip(request *http.Request) (*http.Response, error) {
