@@ -22,7 +22,8 @@ Run from the repository root.
 | Pack a .deb | `scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut out.deb` |
 | Would a new lx commit change the copied files? | `scripts/lx-diff.sh $(cat lx.ref) <new sha>` |
 | Preview the Telegram message / failure issue | `DRY_RUN=1 … scripts/notify-telegram.sh`, `DRY_RUN=1 … scripts/report-issue.sh` (variables listed in each script) |
-| Regenerate the last patch | edit files in `work/`, then `git -C work add -N . && git -C work diff > patches/0002-lx-xhttp-download.patch` |
+| Regenerate the last patch | edit files in `work/`, then `git -C work add -N . && git -C work diff > patches/0003-xhttp-quic-params.patch` |
+| Regenerate an earlier patch (e.g. 0002) | move the later patches out of `patches/`, `prepare.sh` (now that patch is the last), edit and regenerate it as above, move the later patches back, then a fresh `prepare.sh` must still apply them all |
 | CI | push to main (builds and releases), Actions → `build` → Run workflow, Actions → `update` → Run workflow (the daily update, now) |
 
 ## Repository map
@@ -30,10 +31,11 @@ Run from the repository root.
 - `upstream.ref` — the sing-box tag. `lx.ref` — full SHA of the sing-box-lx commit files are copied from. Both are moved by the daily update. `lx-files.txt` — which lx files are copied; `scripts/lx-files.py` applies it (used by `prepare.sh` and `lx-diff.sh`).
 - `patches/0001-upstream-seams.patch` — five upstream files: `constant/v2ray.go`, `option/v2ray_transport.go`, `option/vless.go`, `transport/v2ray/transport.go`, `protocol/vless/outbound.go`.
 - `patches/0002-lx-xhttp-download.patch` — the download endpoint, on the copied lx files (`transport/v2rayxhttp/`, `option/v2ray_xhttp*.go`). To change download behaviour, start in `transport/v2rayxhttp/download_ut.go`.
+- `patches/0003-xhttp-quic-params.patch` — `quic_params` (QUIC congestion control over HTTP/3): the option field in `option/v2ray_xhttp.go`, the parse call in `client.go`, and in `http3.go` a `newHTTP3TransportUT` that installs the controller after each dial (`newHTTP3Transport` keeps its signature for lx's tests). The logic is in `overlay/transport/v2rayxhttp/quic_params*_ut.go` and `overlay/option/v2ray_xhttp_quic_ut.go`.
 - `overlay/cmd/internal/build_libbox/ut_tags.go` — appends `with_xhttp` to libbox's tags.
 - `overlay/common/lxsniffguard/`, `overlay/common/lxdatagram/`, `overlay/adapter/carrier_ut.go` — stubs of lx-only APIs the copied XHTTP code calls. They return nil / pass through, which sing-box-lx itself treats as "feature off", so behaviour equals lx with that feature unset. When lx's XHTTP gains a call into another lx-only package, add the symbol here (and exclude lx tests that need the real thing via `!name` in `lx-files.txt`).
 - `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `fetch-cronet.sh` — prebuilt `libcronet.so` / `.dll` for the naive outbound. `make-keystore.sh` — one-time APK signing key. `notify-telegram.sh` — the build summary message (`DRY_RUN=1` prints it). `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
-- `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
+- `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`, `brutal`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
 - `test/naive-start.sh` — checks a build starts a naive outbound (compiled in, library loads).
 - `examples/` — complete sanitized configs. Keep the client in sync with the complete example in both READMEs; validate with `sing-box check` and `xray run -test` after replacing placeholders.
 - `.github/workflows/build.yml` — modes `release` (push/dispatch), `candidate` and `apk` (called by `update.yml`); jobs resolve, test, binaries, interop, android, promote, release, report, notify.
@@ -51,6 +53,7 @@ Run from the repository root.
 - The download endpoint is a second `*Client` built by `NewClient` from `download` options; only its `newRequest`, xmux pool and `Close` are used.
 - Nothing is inherited from the upload side except the dialer and the session id (same as Xray).
 - Mode with `download`: `stream-one` is an error; `auto` → `packet-up`, or `stream-up` under REALITY. Resolved before the placement checks.
+- `quic_params` only changes what the client sends (sing-quic's Brutal / BBR via `quic.Conn.SetCongestionControl`, like its Hysteria 2 client). Unset keeps quic-go's default (Xray defaults to BBR; we do not, to keep behaviour unchanged). Parsed for every HTTP version so bad values fail at load; outside HTTP/3 it is ignored with a warning.
 - `xmuxRelease.next` chains the download connection's release; every release path must stay idempotent and release both.
 - Build tags: Linux = upstream `DEFAULT_BUILD_TAGS` + `with_purego`, Windows = `DEFAULT_BUILD_TAGS_WINDOWS`, both + `with_xhttp`, `CGO_ENABLED=0`. The naive outbound is compiled in and loads Cronet at run time: next to the binary, `LD_LIBRARY_PATH`, `/usr/local/lib`, `/usr/lib`. The .deb installs `/usr/lib/libcronet.so`; the Windows zip carries `libcronet.dll`.
 - `prepare.sh` stages everything before the last patch, so `git diff` in the tree is exactly that patch. It never commits: libbox reads its version from `git describe`.
@@ -92,7 +95,8 @@ Run from the repository root.
 
 - `download` takes transport options only. `uuid`, `encryption`, `flow` there are rejected as unknown fields: there is one VLESS handshake per connection, and both halves must reach the same Xray inbound.
 - Vision (`xtls-rprx-vision`) is not supported for now. Xray 26.11.9 rejects a flow-less client when its account, or a `flow` at the inbound `settings` level, asks for one.
-- `finalmask.quicParams` does apply to XHTTP over HTTP/3 in Xray; it is unsupported here because lx hard-codes `quic.Config`, not because QUIC is unused.
+- `finalmask.quicParams`: only its congestion control is supported (`quic_params`); lx hard-codes the rest of `quic.Config` (windows etc.).
+- Brutal's window is rate × RTT × 2: on bare loopback (RTT ≈ 0) it falls below one packet and every packet waits for a delayed ACK (2 MB at 8 Mbps took 39 s instead of 2 s). Tests put a delaying UDP relay in front (`delayedUDPRelay`); the interop case uses `up_mbps: 1000`.
 - HTTP/3 with a `utls` block needs `common/tls/utls_client_std_lx.go` (in `lx-files.txt`); without it the config fails with "unsupported usage for uTLS".
 - Xray 26.11.9: `freedom` blocks loopback targets unless `finalRules` allows them; the server's default `xPaddingBytes` is 100-1000 and a client range outside it gets HTTP 400.
 - `curl --socks5-hostname` skips the proxy when `NO_PROXY` lists `127.0.0.1`; the test passes `--noproxy ''`.
@@ -106,4 +110,5 @@ Run from the repository root.
 - 2026-11-15: the first daily run tried lx `797433f` and failed as expected (issue #1): lx changed a context line of `conn.go`, and its XHTTP now calls lx.sniff_guard (`common/lxsniffguard`, `common/lxdatagram`, `adapter` carrier helpers). Fixed by stubs in `overlay/` and a rebased `0002`; `lx.ref` moved to `797433f`. Verified locally: vet, tests with -race, all six interop cases, naive start, cross-compile for windows/android.
 - The log fetch of `report-issue.sh` returned nothing in that run; the cause is unknown (the error was discarded). It now retries, names the failed step, and writes the fetch error into the issue. Check the next issue it opens.
 - The user runs the Linux and Android builds against the real two-server deployment behind Caddy; Windows is untested.
+- 2026-11-20: added `quic_params` (patch `0003`, interop case `stream-up:brutal`). Verified locally: vet (linux/windows/android), tests with -race, `sing-box check`. The new interop case has not run yet (no Xray binary in that environment): check it in the first CI run, then on the real deployment with H3 upload through the CDN.
 - Decided: no Vision; GPL-3.0-or-later; route "upstream tag + copied lx files + patches"; both pins moved only by tested promotion; lx-only features reached from copied files are stubbed, never copied.

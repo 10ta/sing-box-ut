@@ -7,6 +7,8 @@ usage: gen.py OUT_DIR MODE SCENARIO XRAY_BIN
             full   TLS 1.3 + HTTP/2 + uTLS, VLESS encryption, X-Padding obfs
                    and XMUX: the feature set of the real deployment
             h3     full, but HTTP/3 over QUIC (tls.alpn ["h3"]) on both halves
+            brutal h3, with quic_params: Brutal on the upload half (brutal_debug
+                   on, so the client log shows it ran), BBR on the download half
 
 Upload goes to 127.0.0.1:6501 (the Xray inbound), download to 127.0.0.1:6502
 (tcp_tap.py, which forwards to 6501).
@@ -22,7 +24,8 @@ PATH = "/ut/"
 
 def main():
     out_dir, mode, scenario, xray = sys.argv[1:5]
-    h3 = scenario == "h3"
+    brutal = scenario == "brutal"
+    h3 = scenario == "h3" or brutal
     full = scenario == "full" or h3
     alpn = ["h3"] if h3 else ["h2", "http/1.1"]
 
@@ -113,6 +116,11 @@ def main():
     }
 
     download = dict(client_xhttp, server="127.0.0.1", server_port=6502)
+    upload_xhttp = dict(client_xhttp)
+    if brutal:
+        # Brutal sizes its window from the RTT: keep the rate high on loopback.
+        upload_xhttp["quic_params"] = {"congestion": "brutal", "up_mbps": 1000, "brutal_debug": True}
+        download["quic_params"] = {"congestion": "bbr"}
     if client_tls:
         download["tls"] = client_tls
     outbound = {
@@ -121,7 +129,7 @@ def main():
         "server": "127.0.0.1",
         "server_port": 6501,
         "uuid": UUID,
-        "transport": dict(client_xhttp, type="xhttp", mode=mode, download=download),
+        "transport": dict(upload_xhttp, type="xhttp", mode=mode, download=download),
     }
     if client_tls:
         outbound["tls"] = client_tls

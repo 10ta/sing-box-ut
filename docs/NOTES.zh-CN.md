@@ -141,3 +141,12 @@
 - 验证：vet、`-race` 单元测试、6 个互通用例（含经过桩的 H3）、naive 启动、Windows/Android 交叉编译。整树和从仓库重新 prepare 的结果逐字节一致。
 - 顺带发现：lx 自带的 `TestHTTP1PacketUp` 在多个包并行加 `-race` 时偶发失败（检查连接复用，对时序敏感），单独跑 40 次、整包跑 6 次都通过，旧钉住版本同样。CI 的测试改为失败后重跑一次。
 - issue 里每个 job 都写着"日志不可用"：`report-issue.sh` 取 job 日志失败，原因被丢掉了，不确定是日志尚未就绪还是权限。现在会重试 4 次（间隔 15 秒）、写明失败的步骤名（这个不需要日志），取不到时把错误原文写进 issue。
+
+## 2026-11-20：quic_params（HTTP/3 拥塞控制）与 hy2tcp 讨论
+- **目标**：上行经 CDN 走 H3 时吃到 Brutal。Brutal 是发送方拥塞控制，客户端单方面装上就生效，服务端（Xray）和 CDN 回源不用动。下行若直连挂了 brutal-cn 的 VPS（TCP/H2），下行吃内核 TCP Brutal；下行也走 CDN 则是 CDN 边缘的拥塞控制，吃不到。
+- **实现**：照 sing-quic 的 Hysteria 2 客户端，QUIC 连上后 `quicConn.SetCongestionControl(...)`，用上游已有的 `sing-quic/hysteria/congestion`（Brutal）和 `congestion_meta2`（BBR），零新依赖。fork 里的 `SetCongestionControl` 带锁，可在 dial 后从别的 goroutine 调。
+- **配置**：`transport.quic_params`：`congestion`（空 / `bbr` / `brutal`，兼容 Xray 的 `force-brutal`）、`up_mbps`、`bbr_profile`、`brutal_debug`。不写 = 原来的 quic-go 默认（Xray 不写默认 bbr，这里不跟，避免改变现有行为）。非 H3 时警告并忽略；值写错启动报错。`download` 里也能写，不继承。
+- **补丁成本**：新增 `0003-xhttp-quic-params.patch`，只碰 3 个 lx 文件共 14 行（选项字段、`client.go` 解析调用、`http3.go` 加 `newHTTP3TransportUT` 并在 dial 后装控制器）。`newHTTP3Transport` 保留原签名转调，lx 自己的 3 处测试调用不用改。逻辑全在 overlay（`quic_params*_ut.go`）。
+- **坑**：Brutal 窗口 = 速率 × RTT × 2。本机回环 RTT≈0 时窗口小于一个包，每个包都等延迟 ACK：2 MB@8 Mbps 用了 39 s。单测前面加了 20 ms 单向延迟的 UDP 中继后稳定在 2.18 s（BBR 0.3 s，默认 0.5–2 s 不等）。互通用例用 `up_mbps: 1000`。真实网络不受影响，Hysteria 2 本身也一样。
+- **验证（本地）**：vet（linux / windows / android）、`-race` 单测（含新的解析表驱动测试和 H3 限速测试）、`sing-box check` 通过、坏配置报错、H2 下警告。新增互通用例 `stream-up:brutal`（上行 Brutal + `brutal_debug`、下行 BBR，断言日志有 `[brutal]`），**本地没跑**：拿不到 Xray 二进制，交给 CI。
+- **hy2tcp（hy2 over 伪 TCP，mimic 那种）结论：暂不做。** 用户的论点成立：流量既不像 AnyTLS（没有 TLS 握手可指纹），又避开 UDP QoS，hy2 的 Brutal 双向都在。但这正是现在 hy2 + mimic 已经拿到的；问题只是伪 TCP 层放在哪。放进 sing-box 用户态 = udp2raw/phantun 路线：要 root（raw socket 或 TUN）+ 压内核 RST，只能跑在 Linux；Android 非 root 的 VpnService 发不了原始 TCP 段，Windows 原生 raw socket 不能发 TCP。能跑的平台 mimic 已覆盖且更快（内核 eBPF）。兼容 mimic 对端要复刻无规范的握手/seq/窗口探测；mimic 是 GPL-2.0-only，代码不能进 GPL-3.0 的 sing-box。唯一值得做的场景：某台 Linux 跑不了 mimic（内核 < 6.1、没 BTF/DKMS，如部分 OpenWrt）。

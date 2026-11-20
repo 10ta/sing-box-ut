@@ -1,0 +1,62 @@
+diff --git a/option/v2ray_xhttp.go b/option/v2ray_xhttp.go
+index 806b2a7..018df10 100644
+--- a/option/v2ray_xhttp.go
++++ b/option/v2ray_xhttp.go
+@@ -52,6 +52,9 @@ type V2RayXHTTPOptions struct {
+ 	// ut: Download sends the download half of stream-up/packet-up to another
+ 	// server (Xray downloadSettings). See V2RayXHTTPDownloadOptions.
+ 	Download *V2RayXHTTPDownloadOptions `json:"download,omitempty"`
++	// ut: QUICParams picks the QUIC congestion control over HTTP/3 (Xray
++	// finalmask.quicParams). See V2RayXHTTPQUICParamsOptions.
++	QUICParams *V2RayXHTTPQUICParamsOptions `json:"quic_params,omitempty"`
+ 
+ 	// ---- session / seq placement (core) -------------------------------------
+ 
+diff --git a/transport/v2rayxhttp/client.go b/transport/v2rayxhttp/client.go
+index 4b4b9d0..44339a8 100644
+--- a/transport/v2rayxhttp/client.go
++++ b/transport/v2rayxhttp/client.go
+@@ -161,6 +161,10 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
+ 	// given stream (SPECS/TASKS/059).
+ 	realityEnabled := tlsConfigIsReality(tlsConfig)
+ 	version := decideHTTPVersion(tlsConfig, realityEnabled)
++	congestion, err := quicCongestionFor(version, options.QUICParams, warn) // ut: quic_params
++	if err != nil {
++		return nil, err
++	}
+ 	var (
+ 		scheme  string
+ 		newConn func() xmuxConn
+@@ -170,7 +174,7 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
+ 		scheme = "https"
+ 		// lx: SPEC 060 — lx.sniff_guard for the node this transport serves.
+ 		sniffGuard := lxsniffguard.FromContext(ctx).Node(adapter.OutboundTagFromContext(ctx))
+-		newConn, err = newHTTP3Transport(dialer, serverAddr, tlsConfig, xmuxConfig.keepAlivePeriod, warn, sniffGuard, logger)
++		newConn, err = newHTTP3TransportUT(dialer, serverAddr, tlsConfig, xmuxConfig.keepAlivePeriod, congestion, warn, sniffGuard, logger)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+diff --git a/transport/v2rayxhttp/http3.go b/transport/v2rayxhttp/http3.go
+index b614df0..cd73da4 100644
+--- a/transport/v2rayxhttp/http3.go
++++ b/transport/v2rayxhttp/http3.go
+@@ -103,6 +103,11 @@ func http3PathMTUDiscovery() bool {
+ // newHTTP3Transport returns the factory of pooled HTTP/3 connections. warn
+ // receives the load-time warnings of SPEC 104 §6.
+ func newHTTP3Transport(dialer N.Dialer, serverAddr M.Socksaddr, tlsConfig tls.Config, keepAlivePeriod time.Duration, warn func(string), sniffGuard *lxsniffguard.Node, logger logger.Logger) (func() xmuxConn, error) {
++	return newHTTP3TransportUT(dialer, serverAddr, tlsConfig, keepAlivePeriod, quicCongestion{}, warn, sniffGuard, logger)
++}
++
++// ut: newHTTP3TransportUT is newHTTP3Transport with quic_params.
++func newHTTP3TransportUT(dialer N.Dialer, serverAddr M.Socksaddr, tlsConfig tls.Config, keepAlivePeriod time.Duration, congestion quicCongestion, warn func(string), sniffGuard *lxsniffguard.Node, logger logger.Logger) (func() xmuxConn, error) {
+ 	stdConfig, fromUTLS, err := tls.STDConfigForQUIC(tlsConfig)
+ 	var dialErr error
+ 	if err != nil {
+@@ -177,6 +182,7 @@ func newHTTP3Transport(dialer N.Dialer, serverAddr M.Socksaddr, tlsConfig tls.Co
+ 						<-attemptConn.Context().Done()
+ 						packetConn.Close()
+ 					}()
++					congestion.install(attemptConn, logger) // ut: quic_params
+ 					quicConn = attemptConn
+ 					return nil
+ 				})

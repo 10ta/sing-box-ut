@@ -11,6 +11,7 @@ What works today, each item tested against a real Xray server:
 - Upload and download through two different servers (Xray `downloadSettings`), each with its own address, TLS and XHTTP options.
 - `stream-up` and `packet-up` modes, over HTTP/2, HTTP/3 (QUIC) and HTTP/1.1.
 - VLESS encryption (`mlkem768x25519plus`), X-Padding obfuscation, XMUX, uTLS fingerprints.
+- BBR or Brutal congestion control over HTTP/3 (`force-brutal` in Xray's `finalmask.quicParams`).
 
 ## Contents
 
@@ -78,7 +79,7 @@ unzip -q xray.zip xray -d xray-bin
 test/interop/run.sh ./sing-box xray-bin/xray
 ```
 
-Each case fetches a 5 MB file through the proxy and checks that the download request went through the second address. `plain` is cleartext HTTP/1.1. `full` uses TLS 1.3, HTTP/2, uTLS, VLESS encryption, X-Padding obfuscation and XMUX together. `h3` is `full` over HTTP/3. Expected output:
+Each case fetches a 5 MB file through the proxy and checks that the download request went through the second address. `plain` is cleartext HTTP/1.1. `full` uses TLS 1.3, HTTP/2, uTLS, VLESS encryption, X-Padding obfuscation and XMUX together. `h3` is `full` over HTTP/3. `brutal` is `h3` plus `quic_params` (Brutal on the upload half, BBR on the download half) and checks the client log shows Brutal running. Expected output:
 
 ```text
 == stream-up / plain
@@ -92,6 +93,8 @@ ok: payload intact, 1 connection(s) via the download server
 == stream-up / h3
 ok: payload intact, 1 connection(s) via the download server
 == packet-up / h3
+ok: payload intact, 1 connection(s) via the download server
+== stream-up / brutal
 ok: payload intact, 1 connection(s) via the download server
 PASS
 ```
@@ -192,12 +195,37 @@ The matching server side is in [`examples/`](examples/): [`xray-server.json`](ex
 
 Set `alpn` to `["h3"]` in `tls` and in `download.tls`. The two halves are independent, so one may stay on HTTP/2. A `utls` fingerprint is ignored over QUIC, with a warning in the log. The server must be reachable on UDP: Caddy serves HTTP/3 on the UDP port with the same number as its HTTPS port and still forwards h2c to Xray, so the Caddyfile does not change.
 
+### HTTP/3 congestion control (`quic_params`)
+
+The congestion part of Xray's `finalmask.quicParams`. It goes in the XHTTP transport:
+
+```json
+"transport": {
+  "type": "xhttp",
+  "mode": "stream-up",
+  "quic_params": { "congestion": "brutal", "up_mbps": 60 },
+  ...
+}
+```
+
+| Name | Default | Description |
+|---|---|---|
+| `quic_params.congestion` | empty: quic-go's default, as before | `bbr` or `brutal` (Xray's spelling `force-brutal` works too) |
+| `quic_params.up_mbps` | — | Required for `brutal`: the client's send rate in Mbps. Set it to the real upload bandwidth, not higher |
+| `quic_params.bbr_profile` | `standard` | `bbr` only: `standard`, `conservative`, `aggressive` |
+| `quic_params.brutal_debug` | `false` | `brutal` only: logs ACK and loss counts at debug level every few seconds (`xhttp: [brutal] …`) |
+
+- **It only governs what the client sends.** On the upload endpoint it speeds up the upload. `download` accepts it too (nothing is inherited), but the client only sends requests and ACKs to a download endpoint, so it does little there. The server and a CDN's origin leg are unaffected and need no change.
+- **HTTP/3 only.** With another HTTP version it is ignored with a warning; an invalid value (say `brutal` without `up_mbps`) fails at startup.
+- Brutal is the implementation Hysteria 2 uses (sing-quic): loss does not slow it down; it sends at `up_mbps` and sends more to make up for loss (at most 1.25×). Its window is rate × RTT × 2, so on loopback, where the RTT is near zero, it stalls; real networks are not affected.
+- Differences from Xray: Xray defaults to `bbr` when unset, here unset keeps quic-go's default; Xray's `brutalUp: "60 mbps"` is `up_mbps: 60` here; receive windows, `udpHop` and the other quicParams fields are not supported.
+
 ### Xray settings without a counterpart
 
 | Xray client setting | Here |
 |---|---|
 | `flow: xtls-rprx-vision` | Not supported for now. Use it on neither side |
-| `finalmask.quicParams` (congestion control, receive windows) | Not configurable. It applies to HTTP/3 only; here QUIC runs with quic-go defaults |
+| `finalmask.quicParams` | Congestion control only, see the previous section. Receive windows, `udpHop` and the rest are not supported |
 | `finalmask.udp` (noise) | Not supported |
 | `testpre` | Not supported |
 | `id`, `encryption`, `flow`, `testpre` inside `downloadSettings` | Drop them: `download` rejects unknown fields. They are VLESS settings, not transport settings, and Xray ignores them there too. See below |
@@ -276,7 +304,8 @@ flowchart LR
 ├── lx-files.txt              # which sing-box-lx files are copied
 ├── patches/
 │   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
-│   └── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
+│   ├── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
+│   └── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
 ├── overlay/                  # our own files, copied over the tree (libbox build tag)
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
@@ -311,11 +340,11 @@ go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" .
 go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
 ```
 
-Both test packages report `ok`. To change the download logic, edit the files in `work/`, then regenerate `patches/0002-lx-xhttp-download.patch` as described in [AGENTS.md](AGENTS.md). Lines added to lx files are marked `// ut:`; new code goes in `*_ut.go` files.
+Both test packages report `ok`. To change the download or `quic_params` logic, edit the files in `work/`, then regenerate that patch as described in [AGENTS.md](AGENTS.md). Lines added to lx files are marked `// ut:`; new code goes in `*_ut.go` files.
 
 ## 🚧 Limitations & Roadmap
 
-- No Vision flow for now, and no control over QUIC congestion or windows, see [Configuration](#-configuration).
+- No Vision flow for now. QUIC offers a choice of congestion control but no window settings, see [Configuration](#-configuration).
 - The Linux and Windows builds carry upstream's full feature set, naive outbound included. A binary built by hand needs `libcronet.so` next to it, in `LD_LIBRARY_PATH` or in `/usr/lib` to start a naive outbound (`scripts/fetch-cronet.sh work linux amd64 .`).
 - The automated tests run on Linux amd64 against Xray terminating TLS itself. The released Linux and Android builds also work against a real two-server deployment behind Caddy. Not tested: a CDN, REALITY on the download endpoint, dialing through a detour, the Windows builds.
 - Client only. sing-box-lx has no XHTTP server.
@@ -329,6 +358,7 @@ Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at the tag 
 | XHTTP client | ❌ | ✅ | ✅ |
 | VLESS encryption | ❌ | ✅ | ✅ |
 | Download through another server | ❌ | ❌ | ✅ |
+| HTTP/3 congestion control (BBR, Brutal) | ❌ | ❌ | ✅ |
 | Everything else in sing-box-lx | ❌ | ✅ | ❌ |
 
 Sync with both is automatic, see [Update & Maintenance](#-update--maintenance).

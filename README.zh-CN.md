@@ -11,6 +11,7 @@
 - 上行和下行走两台不同的服务器（Xray 的 `downloadSettings`），各有各的地址、TLS 和 XHTTP 选项。
 - `stream-up` 和 `packet-up` 两种模式，可走 HTTP/2、HTTP/3（QUIC）和 HTTP/1.1。
 - VLESS encryption（`mlkem768x25519plus`）、X-Padding 混淆、XMUX、uTLS 指纹。
+- HTTP/3 的拥塞控制可选 BBR 或 Brutal（Xray `finalmask.quicParams` 的 `force-brutal`）。
 
 ## 目录
 
@@ -78,7 +79,7 @@ unzip -q xray.zip xray -d xray-bin
 test/interop/run.sh ./sing-box xray-bin/xray
 ```
 
-每个用例通过代理取回一个 5 MB 的文件，并检查下行请求确实走了第二个地址。`plain` 是明文 HTTP/1.1。`full` 同时启用 TLS 1.3、HTTP/2、uTLS、VLESS encryption、X-Padding 混淆和 XMUX。`h3` 是走 HTTP/3 的 `full`。预期输出：
+每个用例通过代理取回一个 5 MB 的文件，并检查下行请求确实走了第二个地址。`plain` 是明文 HTTP/1.1。`full` 同时启用 TLS 1.3、HTTP/2、uTLS、VLESS encryption、X-Padding 混淆和 XMUX。`h3` 是走 HTTP/3 的 `full`。`brutal` 是 `h3` 加上 `quic_params`（上行 Brutal、下行 BBR），并检查客户端日志里 Brutal 确实在跑。预期输出：
 
 ```text
 == stream-up / plain
@@ -92,6 +93,8 @@ ok: payload intact, 1 connection(s) via the download server
 == stream-up / h3
 ok: payload intact, 1 connection(s) via the download server
 == packet-up / h3
+ok: payload intact, 1 connection(s) via the download server
+== stream-up / brutal
 ok: payload intact, 1 connection(s) via the download server
 PASS
 ```
@@ -192,12 +195,37 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 
 把 `tls` 和 `download.tls` 里的 `alpn` 改成 `["h3"]`。上下行互相独立，可以只改其中一边。`utls` 指纹在 QUIC 上不生效，日志里会有一条警告。服务器必须能通过 UDP 访问：Caddy 在与 HTTPS 端口同号的 UDP 端口上提供 HTTP/3，转发给 Xray 时仍然是 h2c，所以 Caddyfile 不用改。
 
+### HTTP/3 拥塞控制（`quic_params`）
+
+对应 Xray `finalmask.quicParams` 里的拥塞控制部分。写在 XHTTP transport 里：
+
+```json
+"transport": {
+  "type": "xhttp",
+  "mode": "stream-up",
+  "quic_params": { "congestion": "brutal", "up_mbps": 60 },
+  ...
+}
+```
+
+| 名称 | 默认值 | 说明 |
+|---|---|---|
+| `quic_params.congestion` | 空：quic-go 默认，和以前一样 | `bbr` 或 `brutal`（也认 Xray 的写法 `force-brutal`） |
+| `quic_params.up_mbps` | — | `brutal` 必填：客户端发送速率，单位 Mbps。填真实的上行带宽，不要虚高 |
+| `quic_params.bbr_profile` | `standard` | 只用于 `bbr`：`standard`、`conservative`、`aggressive` |
+| `quic_params.brutal_debug` | `false` | 只用于 `brutal`：在 debug 日志里定期打印 ACK 和丢包情况（`xhttp: [brutal] …`） |
+
+- **只管客户端自己发出的包。** 写在上行端点上就是加速上行。`download` 里也能写（不从上行继承），但下行端点上客户端只发请求和 ACK，基本没用。服务端和 CDN 回源都不受影响，不用改。
+- **只对 HTTP/3 生效。** 别的 HTTP 版本上写了会打一条警告并忽略；写错值（比如 `brutal` 没填 `up_mbps`）启动时报错。
+- Brutal 和 Hysteria 2 用的是同一个实现（sing-quic）：不因丢包降速，按 `up_mbps` 发，丢包多时还会多发补偿（最多 1.25 倍）；拥塞窗口是速率 × RTT × 2，所以在 RTT 接近 0 的本机回环上会被卡住，真实网络上没有这个问题。
+- 和 Xray 的差别：Xray 不写时默认 `bbr`，这里不写就是原来的 quic-go 默认；Xray 的 `brutalUp: "60 mbps"` 在这里是 `up_mbps: 60`；接收窗口、`udpHop` 等其他 quicParams 项不支持。
+
 ### 没有对应项的 Xray 设置
 
 | Xray 客户端设置 | 这里 |
 |---|---|
 | `flow: xtls-rprx-vision` | 暂时不支持。两端都不要配 |
-| `finalmask.quicParams`（拥塞控制、接收窗口） | 不可配置。它只对 HTTP/3 生效；这里的 QUIC 用 quic-go 的默认值 |
+| `finalmask.quicParams` | 只支持拥塞控制，见上一节。接收窗口、`udpHop` 等不支持 |
 | `finalmask.udp`（noise） | 不支持 |
 | `testpre` | 不支持 |
 | `downloadSettings` 里的 `id`、`encryption`、`flow`、`testpre` | 去掉：`download` 遇到不认识的字段会报错。它们是 VLESS 的设置，不是传输层设置，Xray 在这个位置也会忽略它们。见下 |
@@ -276,7 +304,8 @@ flowchart LR
 ├── lx-files.txt              # which sing-box-lx files are copied
 ├── patches/
 │   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
-│   └── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
+│   ├── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
+│   └── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
 ├── overlay/                  # our own files, copied over the tree (libbox build tag)
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
@@ -311,11 +340,11 @@ go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" .
 go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
 ```
 
-两个测试包都显示 `ok`。要改下行逻辑，先改 `work/` 里的文件，再按 [AGENTS.md](AGENTS.md) 的说明重新生成 `patches/0002-lx-xhttp-download.patch`。加进 lx 文件的行都带 `// ut:` 标记；新代码放在 `*_ut.go` 文件里。
+两个测试包都显示 `ok`。要改下行或 `quic_params` 的逻辑，先改 `work/` 里的文件，再按 [AGENTS.md](AGENTS.md) 的说明重新生成对应的补丁。加进 lx 文件的行都带 `// ut:` 标记；新代码放在 `*_ut.go` 文件里。
 
 ## 🚧 局限与路线
 
-- 暂时不支持 Vision flow，也不能调 QUIC 的拥塞控制和窗口，见[配置](#-配置)。
+- 暂时不支持 Vision flow；QUIC 只能选拥塞控制，不能调窗口，见[配置](#-配置)。
 - Linux 和 Windows 的构建带上游的全部功能，包括 naive 出站。自己手动编出的二进制要启动 naive 出站，需要把 `libcronet.so` 放在它旁边、`LD_LIBRARY_PATH` 里或 `/usr/lib` 下（`scripts/fetch-cronet.sh work linux amd64 .`）。
 - 自动化测试跑在 Linux amd64 上，对接的是自己做 TLS 终结的 Xray。发布的 Linux 和 Android 构建也在真实的双服务器部署（前面是 Caddy）上跑通了。没测过：CDN、下行端点用 REALITY、经 detour 拨号、Windows 构建。
 - 只有客户端。sing-box-lx 没有 XHTTP 服务端。
@@ -329,6 +358,7 @@ go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checkli
 | XHTTP 客户端 | ❌ | ✅ | ✅ |
 | VLESS encryption | ❌ | ✅ | ✅ |
 | 下行走另一台服务器 | ❌ | ❌ | ✅ |
+| HTTP/3 拥塞控制（BBR、Brutal） | ❌ | ❌ | ✅ |
 | sing-box-lx 的其他改动 | ❌ | ✅ | ❌ |
 
 与两者的同步都是自动的，见[更新与维护](#-更新与维护)。
