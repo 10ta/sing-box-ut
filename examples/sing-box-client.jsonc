@@ -1,0 +1,119 @@
+{
+  "type": "vless",
+  "tag": "xhttp-split",
+  "server": "up.example.com",
+  "server_port": 443,
+  "uuid": "<UUID>",
+  // = the server's "decryption"; omit when that is "none"
+  "encryption": "<VLESS_ENCRYPTION>",
+  // "flow": not supported (no Vision)
+  // default "xudp"; also "packetaddr", or "" for none
+  "packet_encoding": "xudp",
+  // dial fields (detour, bind_interface, ...) work as usual and serve both halves
+  "tls": {
+    "enabled": true,
+    "server_name": "up.example.com",
+    // picks the HTTP version: exactly ["h3"] = HTTP/3 (QUIC, needs UDP to the server),
+    // exactly ["http/1.1"] = HTTP/1.1, anything else = HTTP/2; REALITY is always HTTP/2
+    "alpn": ["h3"],
+    "min_version": "1.3"
+    // "utls": ignored over HTTP/3 (QUIC uses a Chrome profile, a warning is logged)
+    // "ech": not supported over HTTP/3
+  },
+  "transport": {
+    "type": "xhttp",
+    // auto | packet-up | stream-up | stream-one
+    // auto = packet-up (REALITY: stream-one); with "download": packet-up (REALITY: stream-up)
+    // stream-one cannot have "download"
+    "mode": "stream-up",
+    // sent as written (keep the trailing slash); text after "?" becomes the query
+    "path": "/<SECRET_PATH>/",
+    // default: tls.server_name, else the server address
+    "host": "up.example.com",
+    // extra request headers. No User-Agent: Chrome-like headers are added;
+    // "User-Agent": "golang": none added; any other User-Agent: sent as is, none added
+    "headers": {},
+    // default "100-1000"; must lie inside the server's xPaddingBytes
+    "x_padding_bytes": "92-1254",
+    // the x_padding_* below must match the server's xPadding* settings
+    // default false (padding in a Referer query, legacy); true enables the next four
+    "x_padding_obfs_mode": true,
+    "x_padding_key": "<PADDING_KEY>",       // default "x_padding"; unused with placement header
+    "x_padding_header": "X-Cache",          // default "X-Padding"
+    "x_padding_placement": "queryInHeader", // default; or cookie | header | query
+    "x_padding_method": "tokenish",         // default "repeat-x"
+    // where the session id goes, must match the server: path (default) | query | header | cookie
+    "session_placement": "path",
+    // "session_key": "X-Session",   // placement not path; default X-Session (header), x_session (query, cookie)
+    // session id alphabet and length, both or neither; default a dashed UUID
+    // "session_table": "Base62",    // literal ASCII, or hex HEX number alphabet Alphabet ALPHABET base36 BASE36 Base62
+    // "session_length": "16-24",    // len(table)^min must exceed 2^31
+    // default "POST"; "GET" only in packet-up (elsewhere it falls back to POST with a warning)
+    "uplink_http_method": "POST",
+    // default false: streamed bodies (stream-up, stream-one) carry Content-Type: application/grpc,
+    // which stops CDNs and reverse proxies from buffering them
+    "no_grpc_header": false,
+    // packet-up only:
+    // "seq_placement": "path",             // path | query | header | cookie, must match the server
+    // "seq_key": "X-Seq",                   // placement not path; default X-Seq (header), x_seq (query, cookie)
+    // "uplink_data_placement": "auto",     // auto (= body) | body | header | cookie
+    // "uplink_data_key": "X-Data",          // header/cookie payload name; default X-Data (header), x_data (cookie)
+    // "uplink_chunk_size": "3000-4000",     // header/cookie chunk; default header 3000-4000, cookie 2048-3072
+    // "sc_max_each_post_bytes": "1000000",  // largest upload POST, default 1000000
+    // "sc_min_posts_interval_ms": "30",     // gap between upload POSTs, default 30
+    // HTTP connection reuse. Absent or {}: max_connections 3, h_max_request_times 600-900,
+    // h_max_reusable_secs 1800-3000. With any field set, each unset range is unlimited.
+    // Ranges: "min-max", a number or [min, max], rolled once per connection
+    "xmux": {
+      "max_concurrency": "8-16",            // streams per connection
+      // "max_connections": "3",            // connections in the pool; not with max_concurrency
+      "c_max_reuse_times": 0,               // times a connection is handed out; 0 = unlimited
+      "h_max_request_times": "600-900",     // HTTP requests per connection
+      "h_max_reusable_secs": "1800-3000",   // seconds a connection stays reusable
+      "h_keep_alive_period": 30             // ping, seconds; 0 = default (HTTP/2 45, HTTP/3 10); <0 = off
+    },
+    // HTTP/3 only (alpn ["h3"]); ignored with a warning otherwise. Xray: finalmask.quicParams.
+    // Changes only what the client sends, so here it speeds up the upload
+    "quic_params": {
+      // "" = quic-go's default (Xray defaults to bbr) | bbr | brutal (Xray: force-brutal)
+      "congestion": "brutal",
+      // brutal, required: send rate in Mbps (Xray: brutalUp "60 mbps"); the real upload bandwidth
+      "up_mbps": 60,
+      // "bbr_profile": "standard",  // bbr only: standard (default) | conservative | aggressive
+      "brutal_debug": false          // brutal only: log ACK and loss rates at debug level
+    },
+    // the download half (Xray downloadSettings). Nothing is inherited from the upload side:
+    // every transport field except mode and download may be set here, with the same defaults
+    "download": {
+      "server": "down.example.com", // required
+      "server_port": 443,           // required
+      // omit for cleartext
+      "tls": {
+        "enabled": true,
+        "server_name": "down.example.com",
+        "alpn": ["h2", "http/1.1"],
+        "min_version": "1.3",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "ios"
+        }
+      },
+      "path": "/<SECRET_PATH>/",
+      "x_padding_bytes": "92-1254",
+      "x_padding_obfs_mode": true,
+      "x_padding_key": "<PADDING_KEY>",
+      "x_padding_header": "X-Cache",
+      "x_padding_placement": "queryInHeader",
+      "x_padding_method": "tokenish",
+      "xmux": {
+        "max_concurrency": "8-16",
+        "c_max_reuse_times": 0,
+        "h_max_request_times": "600-900",
+        "h_max_reusable_secs": "1800-3000",
+        "h_keep_alive_period": 30
+      }
+      // "quic_params": allowed, little use: the client only sends requests and ACKs here
+      // "uuid", "encryption", "flow": rejected; the outbound's VLESS settings cover both halves
+    }
+  }
+}

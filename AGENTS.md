@@ -19,6 +19,7 @@ Run from the repository root.
 | Test | same packages with `go test -count=1 -race -tags …` |
 | Single test | in `work/`: `go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./transport/v2rayxhttp/ -run TestDownloadSplit -v` |
 | Interop | `test/interop/run.sh ./sing-box xray-bin/xray` (ends with `PASS`; one case: add `stream-up:h3`) |
+| Client examples | `python3 test/check-examples.py ./sing-box` (ends with `PASS`) |
 | Pack a .deb | `scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut out.deb` |
 | Would a new lx commit change the copied files? | `scripts/lx-diff.sh $(cat lx.ref) <new sha>` |
 | Preview the Telegram message / failure issue | `DRY_RUN=1 … scripts/notify-telegram.sh`, `DRY_RUN=1 … scripts/report-issue.sh` (variables listed in each script) |
@@ -37,7 +38,7 @@ Run from the repository root.
 - `scripts/prepare.sh`, `build.sh`, `package-deb.sh`, `go-version.sh` — used by the workflow and by hand; keep them the single source of build logic. `fetch-cronet.sh` — prebuilt `libcronet.so` / `.dll` for the naive outbound. `make-keystore.sh` — one-time APK signing key. `notify-telegram.sh` — the build summary message (`DRY_RUN=1` prints it). `android-client.sh` — checks out the sing-box-for-android commit that matches the version being built.
 - `test/interop/` — `run.sh` (cases `MODE:SCENARIO`), `gen.py` (configs: `plain`, `full`, `h3`, `brutal`), `tcp_tap.py` (the "download server", TCP and UDP relay with a log).
 - `test/naive-start.sh` — checks a build starts a naive outbound (compiled in, library loads).
-- `examples/` — complete sanitized configs. Keep the client in sync with the complete example in both READMEs; validate with `sing-box check` and `xray run -test` after replacing placeholders.
+- `examples/` — sanitized configs. `sing-box-client-minimal.jsonc` (fewest fields that connect) and `sing-box-client.jsonc` (every effective field, defaults and behaviour as `//` comments, alternatives commented out) are the 1st and 2nd ```jsonc block of both READMEs; the zh README translates the comments, never the JSON. `test/check-examples.py` enforces that and runs `sing-box check` on both. A new client option goes into the complete example with a terse comment (default, constraint, Xray name); a removed or Xray-only setting goes into the READMEs' "without a counterpart" table. `xray-server.json`: validate with `xray run -test`.
 - `.github/workflows/build.yml` — modes `release` (push/dispatch), `candidate` and `apk` (called by `update.yml`); jobs resolve, test, binaries, interop, android, promote, release, report, notify.
 - `.github/workflows/update.yml` + `scripts/auto-update.sh` — the daily update. `scripts/report-issue.sh` — the failure issue. `scripts/next-release-tag.sh` — `-ut.N` numbering.
 
@@ -88,6 +89,7 @@ Run from the repository root.
 
 - [ ] `scripts/prepare.sh` succeeds on a clean checkout; vet and tests pass in the tree.
 - [ ] `test/interop/run.sh` ends with `PASS`.
+- [ ] `test/check-examples.py` ends with `PASS` (any change to options or the examples).
 - [ ] After editing files in `work/`: the last patch is regenerated and a fresh `prepare.sh` still applies everything.
 - [ ] Docs synced: if commands, config keys or behaviour changed, update `README.md`, `README.zh-CN.md` and this file together.
 

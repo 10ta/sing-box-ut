@@ -108,75 +108,148 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 
 ## 🔧 配置
 
-相对 sing-box-lx 的 XHTTP 配置，只多了一个对象：VLESS 出站的 XHTTP transport 里的 `download`。
+相对 sing-box-lx 的 XHTTP 配置，多了两个对象：XHTTP transport 里的 `download`（上下行分离）和 `quic_params`（HTTP/3 拥塞控制）。每个字段的默认值和行为写在[完整示例](#完整示例)的注释里。sing-box 接受 `//` 注释，示例可以直接用。把 `<…>` 占位符换成自己的值。
 
-| 名称 | 必填 | 默认值 | 说明 |
-|---|---|---|---|
-| `download.server` | ✅ | — | 下行服务器地址 |
-| `download.server_port` | ✅ | — | 下行服务器端口 |
-| `download.tls` | ❌ | 明文 | 下行服务器的出站 TLS 选项 |
-| `download.path`、`host`、`headers`、`x_padding_*`、`xmux` 等 | ❌ | transport 默认值 | 下行请求的 XHTTP 选项，不从上行继承任何一项 |
-| `download.mode` | ❌ | 上行的 mode | 留空。填了不同的值会报错 |
+### 最小示例
 
-规则与 Xray 一致：
+能连上 [`examples/xray-server.json`](examples/xray-server.json) 那个服务端的最少字段：
 
-- 下行请求和上行共用 session id，拨号用出站自己的 dialer（detour、bind）。
-- `stream-one` 配 `download` 会报错。`auto` 配 `download` 解析为 `packet-up`，REALITY 下为 `stream-up`。
-- `download` 里不能再嵌套 `download`。
+```jsonc
+{
+  "type": "vless",
+  "tag": "xhttp",
+  "server": "up.example.com",
+  "server_port": 443,
+  "uuid": "<UUID>",
+  "encryption": "<VLESS_ENCRYPTION>", // 服务端 decryption 为 "none" 时不写
+  "tls": {
+    "enabled": true,
+    "server_name": "up.example.com"   // 不写 alpn：HTTP/2
+  },
+  "transport": {
+    "type": "xhttp",                  // 不写 mode：auto = packet-up
+    "path": "/<SECRET_PATH>/",
+    // 和服务端的 xPadding* 一致（placement 默认就是 queryInHeader）
+    "x_padding_obfs_mode": true,
+    "x_padding_key": "<PADDING_KEY>",
+    "x_padding_header": "X-Cache",
+    "x_padding_method": "tokenish"
+  }
+}
+```
 
 ### 完整示例
 
-一个 VLESS 出站，上行走 `up.example.com`，下行走 `down.example.com`。它是一份真实 Xray 客户端配置在 sing-box-ut 里的写法。把所有 `<…>` 占位符换成自己的值。
+所有能生效的字段都写上了，并注明默认值；只在别的模式或搭配下才生效的字段以注释列出。这里上行走 HTTP/3 经 CDN 并开 Brutal，下行走 HTTP/2 直连另一台服务器。文件版：[`examples/sing-box-client.jsonc`](examples/sing-box-client.jsonc)。
 
-```json
+```jsonc
 {
   "type": "vless",
   "tag": "xhttp-split",
   "server": "up.example.com",
   "server_port": 443,
   "uuid": "<UUID>",
+  // = 服务端的 "decryption"；那边是 "none" 时不写
   "encryption": "<VLESS_ENCRYPTION>",
+  // "flow"：不支持（没有 Vision）
+  // 默认 "xudp"；也可 "packetaddr"，或 "" 表示不用
+  "packet_encoding": "xudp",
+  // 拨号字段（detour、bind_interface 等）照常可用，上下行两半共用
   "tls": {
     "enabled": true,
     "server_name": "up.example.com",
-    "alpn": ["h2", "http/1.1"],
-    "min_version": "1.3",
-    "utls": { "enabled": true, "fingerprint": "ios" }
+    // 决定 HTTP 版本：恰好 ["h3"] = HTTP/3（QUIC，服务器要能走 UDP），
+    // 恰好 ["http/1.1"] = HTTP/1.1，其余 = HTTP/2；REALITY 总是 HTTP/2
+    "alpn": ["h3"],
+    "min_version": "1.3"
+    // "utls"：HTTP/3 上不生效（QUIC 用 Chrome 指纹，日志有警告）
+    // "ech"：HTTP/3 上不支持
   },
   "transport": {
     "type": "xhttp",
+    // auto | packet-up | stream-up | stream-one
+    // auto = packet-up（REALITY：stream-one）；有 "download" 时 = packet-up（REALITY：stream-up）
+    // stream-one 不能配 "download"
     "mode": "stream-up",
+    // 原样发送（结尾的 / 要留着）；"?" 之后的部分作为 query
     "path": "/<SECRET_PATH>/",
+    // 默认取 tls.server_name，没有则用服务器地址
+    "host": "up.example.com",
+    // 附加请求头。不写 User-Agent：自动补 Chrome 风格的请求头；
+    // "User-Agent": "golang"：什么都不补；其他 User-Agent：原样发送，不补
+    "headers": {},
+    // 默认 "100-1000"；必须落在服务端 xPaddingBytes 范围内
     "x_padding_bytes": "92-1254",
+    // 下面的 x_padding_* 要和服务端的 xPadding* 一致
+    // 默认 false（padding 放在 Referer 的 query 里，旧方式）；true 启用后面四项
     "x_padding_obfs_mode": true,
-    "x_padding_method": "tokenish",
-    "x_padding_placement": "queryInHeader",
-    "x_padding_key": "<PADDING_KEY>",
-    "x_padding_header": "X-Cache",
+    "x_padding_key": "<PADDING_KEY>",       // 默认 "x_padding"；placement 为 header 时不用
+    "x_padding_header": "X-Cache",          // 默认 "X-Padding"
+    "x_padding_placement": "queryInHeader", // 默认值；或 cookie | header | query
+    "x_padding_method": "tokenish",         // 默认 "repeat-x"
+    // session id 放哪，要和服务端一致：path（默认）| query | header | cookie
+    "session_placement": "path",
+    // "session_key": "X-Session",   // placement 不是 path 时用；默认 X-Session（header）、x_session（query、cookie）
+    // session id 的字符表和长度，要么都写要么都不写；默认是带横杠的 UUID
+    // "session_table": "Base62",    // ASCII 字符表，或 hex HEX number alphabet Alphabet ALPHABET base36 BASE36 Base62
+    // "session_length": "16-24",    // len(字符表)^最小长度 要大于 2^31
+    // 默认 "POST"；"GET" 只能用于 packet-up（其他模式退回 POST 并警告）
+    "uplink_http_method": "POST",
+    // 默认 false：流式请求体（stream-up、stream-one）带 Content-Type: application/grpc，
+    // CDN 和反代因此不缓冲
+    "no_grpc_header": false,
+    // 只用于 packet-up：
+    // "seq_placement": "path",             // path | query | header | cookie，要和服务端一致
+    // "seq_key": "X-Seq",                   // placement 不是 path 时用；默认 X-Seq（header）、x_seq（query、cookie）
+    // "uplink_data_placement": "auto",     // auto（= body）| body | header | cookie
+    // "uplink_data_key": "X-Data",          // header/cookie 承载数据时的名字；默认 X-Data（header）、x_data（cookie）
+    // "uplink_chunk_size": "3000-4000",     // header/cookie 分块大小；默认 header 3000-4000、cookie 2048-3072
+    // "sc_max_each_post_bytes": "1000000",  // 单个上行 POST 上限，默认 1000000
+    // "sc_min_posts_interval_ms": "30",     // 上行 POST 最小间隔，默认 30
+    // HTTP 连接复用。不写或 {}：max_connections 3、h_max_request_times 600-900、
+    // h_max_reusable_secs 1800-3000。写了任何一项，其余没写的范围都是不限
+    // 范围写法："min-max"、一个数或 [min, max]，每条连接只随机一次
     "xmux": {
-      "max_concurrency": "8-16",
-      "c_max_reuse_times": 0,
-      "h_max_request_times": "600-900",
-      "h_max_reusable_secs": "1800-3000",
-      "h_keep_alive_period": 30
+      "max_concurrency": "8-16",            // 每条连接承载的流数
+      // "max_connections": "3",            // 连接池的连接数；不能和 max_concurrency 同时写
+      "c_max_reuse_times": 0,               // 一条连接被复用的次数；0 = 不限
+      "h_max_request_times": "600-900",     // 每条连接的 HTTP 请求数
+      "h_max_reusable_secs": "1800-3000",   // 连接可复用的秒数
+      "h_keep_alive_period": 30             // 保活间隔，秒；0 = 默认（HTTP/2 45、HTTP/3 10）；负数 = 关
     },
+    // 只对 HTTP/3（alpn ["h3"]）生效，其他版本警告并忽略。对应 Xray 的 finalmask.quicParams。
+    // 只管客户端发出的包，所以写在这里就是加速上行
+    "quic_params": {
+      // "" = quic-go 默认（Xray 默认是 bbr）| bbr | brutal（Xray 写作 force-brutal）
+      "congestion": "brutal",
+      // brutal 必填：发送速率，Mbps（Xray：brutalUp "60 mbps"）；填真实上行带宽
+      "up_mbps": 60,
+      // "bbr_profile": "standard",  // 只用于 bbr：standard（默认）| conservative | aggressive
+      "brutal_debug": false          // 只用于 brutal：在 debug 日志里打印 ACK 和丢包率
+    },
+    // 下行那一半（Xray 的 downloadSettings）。不从上行继承任何一项：
+    // 除 mode 和 download 外的所有 transport 字段都能写在这里，默认值同上
     "download": {
-      "server": "down.example.com",
-      "server_port": 443,
+      "server": "down.example.com", // 必填
+      "server_port": 443,           // 必填
+      // 不写就是明文
       "tls": {
         "enabled": true,
         "server_name": "down.example.com",
         "alpn": ["h2", "http/1.1"],
         "min_version": "1.3",
-        "utls": { "enabled": true, "fingerprint": "ios" }
+        "utls": {
+          "enabled": true,
+          "fingerprint": "ios"
+        }
       },
       "path": "/<SECRET_PATH>/",
       "x_padding_bytes": "92-1254",
       "x_padding_obfs_mode": true,
-      "x_padding_method": "tokenish",
-      "x_padding_placement": "queryInHeader",
       "x_padding_key": "<PADDING_KEY>",
       "x_padding_header": "X-Cache",
+      "x_padding_placement": "queryInHeader",
+      "x_padding_method": "tokenish",
       "xmux": {
         "max_concurrency": "8-16",
         "c_max_reuse_times": 0,
@@ -184,50 +257,28 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
         "h_max_reusable_secs": "1800-3000",
         "h_keep_alive_period": 30
       }
+      // "quic_params"：可以写，用处不大：客户端在这边只发请求和 ACK
+      // "uuid"、"encryption"、"flow"：会报错；出站本身的 VLESS 设置管两半
     }
   }
 }
 ```
 
-对应的服务端在 [`examples/`](examples/) 里：[`xray-server.json`](examples/xray-server.json)（一个 Xray inbound）和 [`Caddyfile`](examples/Caddyfile)（在它前面做 TLS 终结，两台服务器都用）。客户端和服务端示例通过了 `sing-box check` 和 `xray run -test`；Caddyfile 本文档的作者没有实际运行过。
+对应的服务端在 [`examples/`](examples/) 里：[`xray-server.json`](examples/xray-server.json)（一个 Xray inbound）和 [`Caddyfile`](examples/Caddyfile)（在它前面做 TLS 终结，两台服务器都用）。两份客户端示例每次构建都由 `test/check-examples.py` 跑 `sing-box check`，并核对和两份 README 里的一致；服务端示例通过了 `xray run -test`；Caddyfile 本文档的作者没有实际运行过。
 
 ### HTTP/3
 
-把 `tls` 和 `download.tls` 里的 `alpn` 改成 `["h3"]`。上下行互相独立，可以只改其中一边。`utls` 指纹在 QUIC 上不生效，日志里会有一条警告。服务器必须能通过 UDP 访问：Caddy 在与 HTTPS 端口同号的 UDP 端口上提供 HTTP/3，转发给 Xray 时仍然是 h2c，所以 Caddyfile 不用改。
-
-### HTTP/3 拥塞控制（`quic_params`）
-
-对应 Xray `finalmask.quicParams` 里的拥塞控制部分。写在 XHTTP transport 里：
-
-```json
-"transport": {
-  "type": "xhttp",
-  "mode": "stream-up",
-  "quic_params": { "congestion": "brutal", "up_mbps": 60 },
-  ...
-}
-```
-
-| 名称 | 默认值 | 说明 |
-|---|---|---|
-| `quic_params.congestion` | 空：quic-go 默认，和以前一样 | `bbr` 或 `brutal`（也认 Xray 的写法 `force-brutal`） |
-| `quic_params.up_mbps` | — | `brutal` 必填：客户端发送速率，单位 Mbps。填真实的上行带宽，不要虚高 |
-| `quic_params.bbr_profile` | `standard` | 只用于 `bbr`：`standard`、`conservative`、`aggressive` |
-| `quic_params.brutal_debug` | `false` | 只用于 `brutal`：在 debug 日志里定期打印 ACK 和丢包情况（`xhttp: [brutal] …`） |
-
-- **只管客户端自己发出的包。** 写在上行端点上就是加速上行。`download` 里也能写（不从上行继承），但下行端点上客户端只发请求和 ACK，基本没用。服务端和 CDN 回源都不受影响，不用改。
-- **只对 HTTP/3 生效。** 别的 HTTP 版本上写了会打一条警告并忽略；写错值（比如 `brutal` 没填 `up_mbps`）启动时报错。
-- Brutal 和 Hysteria 2 用的是同一个实现（sing-quic）：不因丢包降速，按 `up_mbps` 发，丢包多时还会多发补偿（最多 1.25 倍）；拥塞窗口是速率 × RTT × 2，所以在 RTT 接近 0 的本机回环上会被卡住，真实网络上没有这个问题。
-- 和 Xray 的差别：Xray 不写时默认 `bbr`，这里不写就是原来的 quic-go 默认；Xray 的 `brutalUp: "60 mbps"` 在这里是 `up_mbps: 60`；接收窗口、`udpHop` 等其他 quicParams 项不支持。
+上下行各自的 `alpn` 决定 HTTP 版本，可以只有一边走 HTTP/3。服务器必须能通过 UDP 访问：Caddy 在与 HTTPS 端口同号的 UDP 端口上提供 HTTP/3，转发给 Xray 时仍然是 h2c，所以 Caddyfile 不用改。
 
 ### 没有对应项的 Xray 设置
 
 | Xray 客户端设置 | 这里 |
 |---|---|
 | `flow: xtls-rprx-vision` | 暂时不支持。两端都不要配 |
-| `finalmask.quicParams` | 只支持拥塞控制，见上一节。接收窗口、`udpHop` 等不支持 |
+| `finalmask.quicParams` | 只支持拥塞控制（`congestion`、`brutalUp`、`bbrProfile`、`debug`），即 `quic_params`。接收窗口、`udpHop` 等其他项不支持 |
 | `finalmask.udp`（noise） | 不支持 |
 | `testpre` | 不支持 |
+| `xhttpSettings` 里只对服务端有用的 `noSSEHeader`、`scMaxBufferedPosts`、`scStreamUpServerSecs`、`serverMaxHeaderBytes`，以及旧的 `scMaxConcurrentPosts` | 写了不报错，但不生效 |
 | `downloadSettings` 里的 `id`、`encryption`、`flow`、`testpre` | 去掉：`download` 遇到不认识的字段会报错。它们是 VLESS 的设置，不是传输层设置，Xray 在这个位置也会忽略它们。见下 |
 
 为什么 `download` 里没有 `uuid` 和 `encryption`：两台服务器承载的是同一条连接的两半，不是两条连接。客户端只在隧道里做一次 VLESS 握手（UUID、encryption），Xray 的 inbound 先按 session id 把上行和下行请求拼起来，再读这次握手。所以两台服务器最终必须通到同一个 Xray inbound，VLESS 设置也只有一组，写在出站本身。

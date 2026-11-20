@@ -309,6 +309,8 @@ jobs:
           xray-bin/xray version | head -1 | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Interop
         run: test/interop/run.sh pkg/usr/bin/sing-box xray-bin/xray
+      - name: Client examples
+        run: python3 -I test/check-examples.py pkg/usr/bin/sing-box
       - name: Naive outbound starts
         run: test/naive-start.sh pkg/usr/bin/sing-box pkg/usr/lib/libcronet.so
 

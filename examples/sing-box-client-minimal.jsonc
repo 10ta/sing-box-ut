@@ -1,0 +1,21 @@
+{
+  "type": "vless",
+  "tag": "xhttp",
+  "server": "up.example.com",
+  "server_port": 443,
+  "uuid": "<UUID>",
+  "encryption": "<VLESS_ENCRYPTION>", // omit when the server's decryption is "none"
+  "tls": {
+    "enabled": true,
+    "server_name": "up.example.com"   // no alpn: HTTP/2
+  },
+  "transport": {
+    "type": "xhttp",                  // no mode: auto = packet-up
+    "path": "/<SECRET_PATH>/",
+    // match the server's xPadding* (placement queryInHeader is the default)
+    "x_padding_obfs_mode": true,
+    "x_padding_key": "<PADDING_KEY>",
+    "x_padding_header": "X-Cache",
+    "x_padding_method": "tokenish"
+  }
+}

@@ -108,75 +108,148 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 
 ## 🔧 Configuration
 
-The only addition to sing-box-lx's XHTTP configuration is one object, `download`, in the XHTTP transport of a VLESS outbound.
+On top of sing-box-lx's XHTTP options there are two objects in the XHTTP transport: `download` (split upload and download) and `quic_params` (HTTP/3 congestion control). Defaults and behaviour of every field are in the comments of the [complete example](#complete-example). sing-box accepts `//` comments, so the examples work as they are. Replace every `<…>` placeholder with your own value.
 
-| Name | Required | Default | Description |
-|---|---|---|---|
-| `download.server` | ✅ | — | Address of the download server |
-| `download.server_port` | ✅ | — | Port of the download server |
-| `download.tls` | ❌ | cleartext | Outbound TLS options for the download server |
-| `download.path`, `host`, `headers`, `x_padding_*`, `xmux`, … | ❌ | transport defaults | The XHTTP options of the download request. Nothing is inherited from the upload side |
-| `download.mode` | ❌ | upload side's mode | Leave empty. A different value is rejected |
+### Minimal example
 
-Rules, matching Xray:
+The fewest fields that connect to the server in [`examples/xray-server.json`](examples/xray-server.json):
 
-- The download request shares the session id with the upload and uses the outbound's own dialer (detour, bind).
-- `stream-one` with `download` is rejected. `auto` with `download` becomes `packet-up`, or `stream-up` under REALITY.
-- `download` cannot contain another `download`.
+```jsonc
+{
+  "type": "vless",
+  "tag": "xhttp",
+  "server": "up.example.com",
+  "server_port": 443,
+  "uuid": "<UUID>",
+  "encryption": "<VLESS_ENCRYPTION>", // omit when the server's decryption is "none"
+  "tls": {
+    "enabled": true,
+    "server_name": "up.example.com"   // no alpn: HTTP/2
+  },
+  "transport": {
+    "type": "xhttp",                  // no mode: auto = packet-up
+    "path": "/<SECRET_PATH>/",
+    // match the server's xPadding* (placement queryInHeader is the default)
+    "x_padding_obfs_mode": true,
+    "x_padding_key": "<PADDING_KEY>",
+    "x_padding_header": "X-Cache",
+    "x_padding_method": "tokenish"
+  }
+}
+```
 
 ### Complete example
 
-A VLESS outbound that uploads through `up.example.com` and downloads through `down.example.com`. It is the sing-box-ut form of a real Xray client config. Replace every `<…>` placeholder.
+Every field that takes effect is written out with its default; fields that only take effect in another mode or combination are listed as comments. Here the upload goes over HTTP/3 through a CDN with Brutal, the download over HTTP/2 straight to a second server. As a file: [`examples/sing-box-client.jsonc`](examples/sing-box-client.jsonc).
 
-```json
+```jsonc
 {
   "type": "vless",
   "tag": "xhttp-split",
   "server": "up.example.com",
   "server_port": 443,
   "uuid": "<UUID>",
+  // = the server's "decryption"; omit when that is "none"
   "encryption": "<VLESS_ENCRYPTION>",
+  // "flow": not supported (no Vision)
+  // default "xudp"; also "packetaddr", or "" for none
+  "packet_encoding": "xudp",
+  // dial fields (detour, bind_interface, ...) work as usual and serve both halves
   "tls": {
     "enabled": true,
     "server_name": "up.example.com",
-    "alpn": ["h2", "http/1.1"],
-    "min_version": "1.3",
-    "utls": { "enabled": true, "fingerprint": "ios" }
+    // picks the HTTP version: exactly ["h3"] = HTTP/3 (QUIC, needs UDP to the server),
+    // exactly ["http/1.1"] = HTTP/1.1, anything else = HTTP/2; REALITY is always HTTP/2
+    "alpn": ["h3"],
+    "min_version": "1.3"
+    // "utls": ignored over HTTP/3 (QUIC uses a Chrome profile, a warning is logged)
+    // "ech": not supported over HTTP/3
   },
   "transport": {
     "type": "xhttp",
+    // auto | packet-up | stream-up | stream-one
+    // auto = packet-up (REALITY: stream-one); with "download": packet-up (REALITY: stream-up)
+    // stream-one cannot have "download"
     "mode": "stream-up",
+    // sent as written (keep the trailing slash); text after "?" becomes the query
     "path": "/<SECRET_PATH>/",
+    // default: tls.server_name, else the server address
+    "host": "up.example.com",
+    // extra request headers. No User-Agent: Chrome-like headers are added;
+    // "User-Agent": "golang": none added; any other User-Agent: sent as is, none added
+    "headers": {},
+    // default "100-1000"; must lie inside the server's xPaddingBytes
     "x_padding_bytes": "92-1254",
+    // the x_padding_* below must match the server's xPadding* settings
+    // default false (padding in a Referer query, legacy); true enables the next four
     "x_padding_obfs_mode": true,
-    "x_padding_method": "tokenish",
-    "x_padding_placement": "queryInHeader",
-    "x_padding_key": "<PADDING_KEY>",
-    "x_padding_header": "X-Cache",
+    "x_padding_key": "<PADDING_KEY>",       // default "x_padding"; unused with placement header
+    "x_padding_header": "X-Cache",          // default "X-Padding"
+    "x_padding_placement": "queryInHeader", // default; or cookie | header | query
+    "x_padding_method": "tokenish",         // default "repeat-x"
+    // where the session id goes, must match the server: path (default) | query | header | cookie
+    "session_placement": "path",
+    // "session_key": "X-Session",   // placement not path; default X-Session (header), x_session (query, cookie)
+    // session id alphabet and length, both or neither; default a dashed UUID
+    // "session_table": "Base62",    // literal ASCII, or hex HEX number alphabet Alphabet ALPHABET base36 BASE36 Base62
+    // "session_length": "16-24",    // len(table)^min must exceed 2^31
+    // default "POST"; "GET" only in packet-up (elsewhere it falls back to POST with a warning)
+    "uplink_http_method": "POST",
+    // default false: streamed bodies (stream-up, stream-one) carry Content-Type: application/grpc,
+    // which stops CDNs and reverse proxies from buffering them
+    "no_grpc_header": false,
+    // packet-up only:
+    // "seq_placement": "path",             // path | query | header | cookie, must match the server
+    // "seq_key": "X-Seq",                   // placement not path; default X-Seq (header), x_seq (query, cookie)
+    // "uplink_data_placement": "auto",     // auto (= body) | body | header | cookie
+    // "uplink_data_key": "X-Data",          // header/cookie payload name; default X-Data (header), x_data (cookie)
+    // "uplink_chunk_size": "3000-4000",     // header/cookie chunk; default header 3000-4000, cookie 2048-3072
+    // "sc_max_each_post_bytes": "1000000",  // largest upload POST, default 1000000
+    // "sc_min_posts_interval_ms": "30",     // gap between upload POSTs, default 30
+    // HTTP connection reuse. Absent or {}: max_connections 3, h_max_request_times 600-900,
+    // h_max_reusable_secs 1800-3000. With any field set, each unset range is unlimited.
+    // Ranges: "min-max", a number or [min, max], rolled once per connection
     "xmux": {
-      "max_concurrency": "8-16",
-      "c_max_reuse_times": 0,
-      "h_max_request_times": "600-900",
-      "h_max_reusable_secs": "1800-3000",
-      "h_keep_alive_period": 30
+      "max_concurrency": "8-16",            // streams per connection
+      // "max_connections": "3",            // connections in the pool; not with max_concurrency
+      "c_max_reuse_times": 0,               // times a connection is handed out; 0 = unlimited
+      "h_max_request_times": "600-900",     // HTTP requests per connection
+      "h_max_reusable_secs": "1800-3000",   // seconds a connection stays reusable
+      "h_keep_alive_period": 30             // ping, seconds; 0 = default (HTTP/2 45, HTTP/3 10); <0 = off
     },
+    // HTTP/3 only (alpn ["h3"]); ignored with a warning otherwise. Xray: finalmask.quicParams.
+    // Changes only what the client sends, so here it speeds up the upload
+    "quic_params": {
+      // "" = quic-go's default (Xray defaults to bbr) | bbr | brutal (Xray: force-brutal)
+      "congestion": "brutal",
+      // brutal, required: send rate in Mbps (Xray: brutalUp "60 mbps"); the real upload bandwidth
+      "up_mbps": 60,
+      // "bbr_profile": "standard",  // bbr only: standard (default) | conservative | aggressive
+      "brutal_debug": false          // brutal only: log ACK and loss rates at debug level
+    },
+    // the download half (Xray downloadSettings). Nothing is inherited from the upload side:
+    // every transport field except mode and download may be set here, with the same defaults
     "download": {
-      "server": "down.example.com",
-      "server_port": 443,
+      "server": "down.example.com", // required
+      "server_port": 443,           // required
+      // omit for cleartext
       "tls": {
         "enabled": true,
         "server_name": "down.example.com",
         "alpn": ["h2", "http/1.1"],
         "min_version": "1.3",
-        "utls": { "enabled": true, "fingerprint": "ios" }
+        "utls": {
+          "enabled": true,
+          "fingerprint": "ios"
+        }
       },
       "path": "/<SECRET_PATH>/",
       "x_padding_bytes": "92-1254",
       "x_padding_obfs_mode": true,
-      "x_padding_method": "tokenish",
-      "x_padding_placement": "queryInHeader",
       "x_padding_key": "<PADDING_KEY>",
       "x_padding_header": "X-Cache",
+      "x_padding_placement": "queryInHeader",
+      "x_padding_method": "tokenish",
       "xmux": {
         "max_concurrency": "8-16",
         "c_max_reuse_times": 0,
@@ -184,50 +257,28 @@ A VLESS outbound that uploads through `up.example.com` and downloads through `do
         "h_max_reusable_secs": "1800-3000",
         "h_keep_alive_period": 30
       }
+      // "quic_params": allowed, little use: the client only sends requests and ACKs here
+      // "uuid", "encryption", "flow": rejected; the outbound's VLESS settings cover both halves
     }
   }
 }
 ```
 
-The matching server side is in [`examples/`](examples/): [`xray-server.json`](examples/xray-server.json) (one Xray inbound) and [`Caddyfile`](examples/Caddyfile) (TLS termination in front of it, on both servers). The client and server examples pass `sing-box check` and `xray run -test`; the Caddyfile has not been run by the author of this document.
+The matching server side is in [`examples/`](examples/): [`xray-server.json`](examples/xray-server.json) (one Xray inbound) and [`Caddyfile`](examples/Caddyfile) (TLS termination in front of it, on both servers). Every build runs both client examples through `sing-box check` and checks the READMEs carry them unchanged (`test/check-examples.py`); the server example passes `xray run -test`; the Caddyfile has not been run by the author of this document.
 
 ### HTTP/3
 
-Set `alpn` to `["h3"]` in `tls` and in `download.tls`. The two halves are independent, so one may stay on HTTP/2. A `utls` fingerprint is ignored over QUIC, with a warning in the log. The server must be reachable on UDP: Caddy serves HTTP/3 on the UDP port with the same number as its HTTPS port and still forwards h2c to Xray, so the Caddyfile does not change.
-
-### HTTP/3 congestion control (`quic_params`)
-
-The congestion part of Xray's `finalmask.quicParams`. It goes in the XHTTP transport:
-
-```json
-"transport": {
-  "type": "xhttp",
-  "mode": "stream-up",
-  "quic_params": { "congestion": "brutal", "up_mbps": 60 },
-  ...
-}
-```
-
-| Name | Default | Description |
-|---|---|---|
-| `quic_params.congestion` | empty: quic-go's default, as before | `bbr` or `brutal` (Xray's spelling `force-brutal` works too) |
-| `quic_params.up_mbps` | — | Required for `brutal`: the client's send rate in Mbps. Set it to the real upload bandwidth, not higher |
-| `quic_params.bbr_profile` | `standard` | `bbr` only: `standard`, `conservative`, `aggressive` |
-| `quic_params.brutal_debug` | `false` | `brutal` only: logs ACK and loss counts at debug level every few seconds (`xhttp: [brutal] …`) |
-
-- **It only governs what the client sends.** On the upload endpoint it speeds up the upload. `download` accepts it too (nothing is inherited), but the client only sends requests and ACKs to a download endpoint, so it does little there. The server and a CDN's origin leg are unaffected and need no change.
-- **HTTP/3 only.** With another HTTP version it is ignored with a warning; an invalid value (say `brutal` without `up_mbps`) fails at startup.
-- Brutal is the implementation Hysteria 2 uses (sing-quic): loss does not slow it down; it sends at `up_mbps` and sends more to make up for loss (at most 1.25×). Its window is rate × RTT × 2, so on loopback, where the RTT is near zero, it stalls; real networks are not affected.
-- Differences from Xray: Xray defaults to `bbr` when unset, here unset keeps quic-go's default; Xray's `brutalUp: "60 mbps"` is `up_mbps: 60` here; receive windows, `udpHop` and the other quicParams fields are not supported.
+Each half's `alpn` picks its HTTP version, so one half may use HTTP/3 alone. The server must be reachable on UDP: Caddy serves HTTP/3 on the UDP port with the same number as its HTTPS port and still forwards h2c to Xray, so the Caddyfile does not change.
 
 ### Xray settings without a counterpart
 
 | Xray client setting | Here |
 |---|---|
 | `flow: xtls-rprx-vision` | Not supported for now. Use it on neither side |
-| `finalmask.quicParams` | Congestion control only, see the previous section. Receive windows, `udpHop` and the rest are not supported |
+| `finalmask.quicParams` | Congestion control only (`congestion`, `brutalUp`, `bbrProfile`, `debug`), as `quic_params`. Receive windows, `udpHop` and the rest are not supported |
 | `finalmask.udp` (noise) | Not supported |
 | `testpre` | Not supported |
+| Server-only `xhttpSettings` fields `noSSEHeader`, `scMaxBufferedPosts`, `scStreamUpServerSecs`, `serverMaxHeaderBytes`, and the old `scMaxConcurrentPosts` | Accepted, no effect |
 | `id`, `encryption`, `flow`, `testpre` inside `downloadSettings` | Drop them: `download` rejects unknown fields. They are VLESS settings, not transport settings, and Xray ignores them there too. See below |
 
 Why `download` has no `uuid` or `encryption`: the two servers carry the two halves of one connection, not two connections. The client makes a single VLESS handshake (UUID, encryption) inside the tunnel, and the Xray inbound joins the upload and download requests by session id before it reads that handshake. So both servers must lead to the same Xray inbound, and there is only one set of VLESS settings, on the outbound itself.
