@@ -1,0 +1,62 @@
+{
+  "type": "masque-client",
+  "tag": "warp",
+  // Xray settings.address / port. Zero Trust 162.159.197.2, free WARP 162.159.198.2, WARP+ 162.159.199.2
+  // (IPv6 2606:4700:102::2, 103::2, 104::2), or a preferred IP or a domain
+  "server": "162.159.197.2",
+  // 443, 500, 1701, 4443, 4500, 8095 or 8443
+  "server_port": 443,
+  // HTTP version: default 3 (HTTP/3, QUIC). With warp only 3 is accepted for now: 2 and 1 fail at load
+  "version": 3,
+  // with warp always true, whatever is written: no fallback to HTTP/2 or HTTP/1.1
+  "disable_version_fallback": true,
+  // Cloudflare WARP mode (Xray masqueSettings.warp); the values come from usque's config.json
+  "warp": {
+    // required: usque private_key, an ECDSA P-256 key (base64 DER or PEM); signs the mTLS client certificate
+    "private_key": "<WARP_PRIVATE_KEY>",
+    // required: usque endpoint_pub_key (base64 DER or PEM); the server certificate must carry it, no CA check
+    "public_key": "<WARP_PUBLIC_KEY>",
+    // required: usque ipv4 / ipv6, at most one of each; a bare address = /32, /128.
+    // Used at once: no ADDRESS_REQUEST; an ADDRESS_ASSIGN from the server replaces them
+    "address": ["100.96.0.1/32", "2606:4700:11:1000::1/128"],
+    // default; the CONNECT-IP authority (Xray masqueSettings.host)
+    "host": "cloudflareaccess.com"
+  },
+  // fixed with warp, no options: :protocol cf-connect-ip on path "/", SETTINGS 0x276, 20-byte QUIC connection IDs
+  // refused with warp: username, password, path, advertise_routes
+  "tls": {
+    "enabled": true,    // with warp always on
+    // empty: no SNI (Xray serverName ""); or a cover SNI
+    "server_name": "",
+    "alpn": ["h3"]      // with warp: omit it or ["h3"]
+    // refused with warp: insecure, certificate*, client_*, disable_sni, ech, utls, reality
+  },
+  // extra request headers. No User-Agent is sent unless set here; Host and Capsule-Protocol are refused with warp
+  "headers": {},
+  // version 3 only (ignored with a warning on 2). Xray: finalmask.quicParams.
+  // Changes only what the client sends: speeds up the upload, the download is Cloudflare's to pace
+  "quic_params": {
+    // "" = quic-go's default (Xray defaults to bbr) | bbr | brutal (Xray: force-brutal)
+    "congestion": "brutal",
+    // brutal, required: send rate in Mbps (Xray: brutalUp "60 mbps"); the real upload bandwidth
+    "up_mbps": 60,
+    // "bbr_profile": "standard",  // bbr only: standard (default) | conservative | aggressive
+    "brutal_debug": false          // brutal only: log ACK and loss rates at debug level
+  },
+  // the QUIC connection
+  "initial_packet_size": 1331,          // default mtu + 51
+  "disable_path_mtu_discovery": false,
+  "keep_alive_period": "10s",           // default 10s (Xray xmux.hKeepAlivePeriod)
+  // "idle_timeout": "30s",             // default: quic-go's 30s
+  // "stream_receive_window": "", "connection_receive_window": "", "max_concurrent_streams": 0: quic-go's defaults
+  // the tunnel
+  "mtu": 1280,                          // default, WARP's MTU
+  "system": false,                      // default: userspace stack; true: a real interface, needs root
+  // "name": "masque",                  // system only: interface name
+  "on_demand": false,                   // true: may disconnect while idle, reconnects on traffic
+  "udp_timeout": "5m",                  // default
+  "udp_mapping": "endpoint_independent",    // default
+  "udp_filtering": "endpoint_independent",  // default
+  "udp_nat_max": 0                      // 0: chosen from total memory
+  // dial fields (detour, bind_interface, ...) work as usual; HTTP/3 is UDP, so a detour must carry UDP
+}

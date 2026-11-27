@@ -1,0 +1,154 @@
+diff --git a/option/masque.go b/option/masque.go
+index f25ea39..2c3fb44 100644
+--- a/option/masque.go
++++ b/option/masque.go
+@@ -35,6 +35,8 @@ type _MASQUEClientEndpointOptions struct {
+ 	AdvertiseRoutes        []netip.Prefix       `json:"advertise_routes,omitempty"`
+ 	UDPTimeout             badoption.Duration   `json:"udp_timeout,omitempty"`
+ 	OnDemand               bool                 `json:"on_demand,omitempty"`
++	WARP                   *MASQUEWARPOptions   `json:"warp,omitempty"`        // ut: masque_ut.go
++	QUICParams             *QUICParamsOptions   `json:"quic_params,omitempty"` // ut: quic_params_ut.go
+ 	HTTP2Options           HTTP2Options         `json:"-"`
+ 	HTTP3Options           QUICOptions          `json:"-"`
+ }
+diff --git a/protocol/masque/client.go b/protocol/masque/client.go
+index f87fc3b..d8ac2e4 100644
+--- a/protocol/masque/client.go
++++ b/protocol/masque/client.go
+@@ -77,6 +77,10 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
+ 			version = 2
+ 		}
+ 	}
++	ut, err := newClientUT(logger, &options, version) // ut: warp, quic_params (warp_ut.go)
++	if err != nil {
++		return nil, err
++	}
+ 	if http2Options.KeepAlivePeriod == 0 {
+ 		http2Options.KeepAlivePeriod = badoption.Duration(defaultKeepAlivePeriod)
+ 	}
+@@ -116,6 +120,7 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
+ 		DisableVersionFallback: options.DisableVersionFallback,
+ 		HTTP2Options:           http2Options,
+ 		HTTP3Options:           options.HTTP3Options,
++		HTTP3UT:                ut.http3, // ut
+ 	})
+ 	if err != nil {
+ 		return nil, err
+@@ -140,6 +145,7 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
+ 		Path:            options.Path,
+ 		AdvertiseRoutes: options.AdvertiseRoutes,
+ 		Handler:         clientEndpoint,
++		UT:              ut.masque, // ut
+ 	})
+ 	if err != nil {
+ 		httpClient.Close()
+diff --git a/transport/http/client.go b/transport/http/client.go
+index b90889a..16285dc 100644
+--- a/transport/http/client.go
++++ b/transport/http/client.go
+@@ -51,6 +51,7 @@ type ClientOptions struct {
+ 	DisableVersionFallback bool
+ 	HTTP2Options           option.HTTP2Options
+ 	HTTP3Options           option.QUICOptions
++	HTTP3UT                HTTP3UTOptions // ut: see client_ut.go
+ }
+ 
+ type http3Client interface {
+diff --git a/transport/http/client_h3.go b/transport/http/client_h3.go
+index 5dc616c..c17dd35 100644
+--- a/transport/http/client_h3.go
++++ b/transport/http/client_h3.go
+@@ -39,6 +39,8 @@ type http3ClientImpl struct {
+ 	access        sync.Mutex
+ 	conn          *http3.ClientConn
+ 	rawConn       net.Conn
++	ut            HTTP3UTOptions // ut: see client_ut.go
++	quicConn      *quic.Conn     // ut: the QUIC connection under conn
+ }
+ 
+ func newHTTP3Client(options ClientOptions, authorization string) (http3Client, error) {
+@@ -70,7 +72,8 @@ func newHTTP3Client(options ClientOptions, authorization string) (http3Client, e
+ 		headers:       headers,
+ 		authorization: authorization,
+ 		quicConfig:    quicConfig,
+-		transport:     &http3.Transport{EnableDatagrams: true, DisableCompression: true},
++		transport:     &http3.Transport{EnableDatagrams: true, DisableCompression: true, AdditionalSettings: options.HTTP3UT.AdditionalSettings},
++		ut:            options.HTTP3UT, // ut: also AdditionalSettings above
+ 	}, nil
+ }
+ 
+@@ -91,7 +94,7 @@ func (c *http3ClientImpl) acquire(ctx context.Context) (*http3.ClientConn, error
+ 		}
+ 		return nil, E.Cause1(ErrHTTP3Unavailable, err)
+ 	}
+-	quicConn, err := qtls.DialEarly(ctx, rawConn, c.tlsConfig, c.quicConfig)
++	quicConn, err := c.dialQUICUT(ctx, rawConn) // ut: was qtls.DialEarly
+ 	if err != nil {
+ 		rawConn.Close()
+ 		if ctx.Err() != nil {
+@@ -101,6 +104,7 @@ func (c *http3ClientImpl) acquire(ctx context.Context) (*http3.ClientConn, error
+ 	}
+ 	c.conn = c.transport.NewClientConn(quicConn)
+ 	c.rawConn = rawConn
++	c.quicConn = quicConn // ut
+ 	return c.conn, nil
+ }
+ 
+@@ -182,7 +186,7 @@ func (c *http3ClientImpl) OpenTunnel(ctx context.Context, request tunnelRequest)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return &http3RequestDatagramStream{stream: stream, datagramsEnabled: clientConn.Settings().EnableDatagrams}, nil
++	return c.tunnelStreamUT(stream, clientConn) // ut: was &http3RequestDatagramStream{...}
+ }
+ 
+ func (c *http3ClientImpl) ResetConnection() {
+diff --git a/transport/masque/client.go b/transport/masque/client.go
+index 494ec8f..25d2d58 100644
+--- a/transport/masque/client.go
++++ b/transport/masque/client.go
+@@ -40,6 +40,7 @@ type ClientOptions struct {
+ 	Path            string
+ 	AdvertiseRoutes []netip.Prefix
+ 	Handler         ClientHandler
++	UT              ClientUTOptions // ut: see client_ut.go
+ }
+ 
+ type Client struct {
+@@ -57,6 +58,7 @@ type Client struct {
+ 	lastError       error
+ 	stateUpdated    chan struct{}
+ 	loopDone        chan struct{}
++	ut              ClientUTOptions // ut
+ }
+ 
+ type clientSession struct {
+@@ -86,6 +88,7 @@ func NewClient(options ClientOptions) (*Client, error) {
+ 		advertiseRoutes: advertiseRoutes,
+ 		handler:         options.Handler,
+ 		stateUpdated:    make(chan struct{}),
++		ut:              options.UT, // ut
+ 	}, nil
+ }
+ 
+@@ -164,7 +167,7 @@ func (c *Client) loop() {
+ 
+ func (c *Client) connect() (bool, error) {
+ 	dialCtx, cancelDial := context.WithTimeout(c.ctx, C.TCPTimeout)
+-	stream, err := c.httpClient.OpenTunnel(dialCtx, upgradeToken, c.template.Expand())
++	stream, err := c.httpClient.OpenTunnel(dialCtx, c.ut.protocol(), c.template.Expand()) // ut: was upgradeToken
+ 	cancelDial()
+ 	if err != nil {
+ 		return false, err
+@@ -183,10 +186,7 @@ func (c *Client) connect() (bool, error) {
+ 	current.session = newSession(c.ctx, stream, current, c.handler.FrontHeadroom)
+ 	c.current = current
+ 	c.access.Unlock()
+-	err = current.writeCapsule(newAddressCapsule(capsuleTypeAddressRequest, []AssignedAddress{
+-		{RequestID: 1, Prefix: netip.PrefixFrom(netip.IPv4Unspecified(), 32)},
+-		{RequestID: 2, Prefix: netip.PrefixFrom(netip.IPv6Unspecified(), 128)},
+-	}))
++	err = current.requestAddressesUT() // ut: ADDRESS_REQUEST, or the static addresses
+ 	if err == nil && len(c.advertiseRoutes) > 0 {
+ 		err = current.writeCapsule(newRouteCapsule(c.advertiseRoutes))
+ 	}

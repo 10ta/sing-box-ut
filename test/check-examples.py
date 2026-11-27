@@ -3,11 +3,12 @@
 
 usage: check-examples.py SING_BOX_BIN
 
-examples/sing-box-client-minimal.jsonc and examples/sing-box-client.jsonc must
-equal, comments aside, the first and second ```jsonc block of README.md and of
-README.zh-CN.md (the comments are translated there, the JSON is not). Each
-example then goes through `sing-box check` as the only outbound, with the
-placeholders filled in and "encryption" dropped (a real key needs Xray).
+The files in EXAMPLES must equal, comments aside, the ```jsonc blocks of
+README.md and of README.zh-CN.md, in the same order (the comments are
+translated there, the JSON is not). Each example then goes through
+`sing-box check` as the only outbound (masque-client: the only endpoint), with
+the placeholders filled in and "encryption" dropped (a real key needs Xray).
+The WARP keys are throwaway test keys, valid only in form.
 """
 import json
 import os
@@ -17,7 +18,20 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXAMPLES = ["examples/sing-box-client-minimal.jsonc", "examples/sing-box-client.jsonc"]
+EXAMPLES = [
+    "examples/sing-box-client-minimal.jsonc",
+    "examples/sing-box-client.jsonc",
+    "examples/sing-box-warp-minimal.jsonc",
+    "examples/sing-box-warp.jsonc",
+]
+PLACEHOLDERS = {
+    "<UUID>": "6d0f1a52-3c0e-4f0e-9b1f-5a8f4f0c7d11",
+    # throwaway P-256 keys: base64 SEC 1 private key, base64 PKIX public key
+    "<WARP_PRIVATE_KEY>": "MHcCAQEEIFQPygDRmSDFoghcxXYuNbFtwBc/WZ3P+9DHDx1q/2zloAoGCCqGSM49AwEHoUQDQgAErFOg1jEr3tDtrgK/"
+    "MSeCHv+RZeXi3MP+lc+iu0bHTiot3NwkaRFsoItNJJPKNFy9ePSYnIaldDfwkhGd4d98jQ==",
+    "<WARP_PUBLIC_KEY>": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgJBU1bUD3K2eIJv7IBTRzEic91cazAPswEl2uvv/yAemdWFwrrTOj/"
+    "jpX9qFEcjb4h2lh9qcvcNEaYwsC3gb2g==",
+}
 READMES = ["README.md", "README.zh-CN.md"]
 
 
@@ -69,11 +83,14 @@ def main():
                 sys.exit(f"FAIL: {readme} block {i + 1} differs from {EXAMPLES[i]}")
         print(f"ok: {readme} matches the examples")
     for path, outbound in zip(EXAMPLES, examples):
-        text = json.dumps(outbound).replace("<UUID>", "6d0f1a52-3c0e-4f0e-9b1f-5a8f4f0c7d11")
+        text = json.dumps(outbound)
+        for placeholder, value in PLACEHOLDERS.items():
+            text = text.replace(placeholder, value)
         outbound = json.loads(text)
         outbound.pop("encryption", None)
+        section = "endpoints" if outbound["type"] == "masque-client" else "outbounds"
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump({"log": {"level": "error"}, "outbounds": [outbound]}, f)
+            json.dump({"log": {"level": "error"}, section: [outbound]}, f)
         result = subprocess.run([singbox, "check", "-c", f.name], capture_output=True, text=True)
         os.unlink(f.name)
         if result.returncode != 0:

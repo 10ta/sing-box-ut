@@ -2,16 +2,17 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-Patches that give sing-box a native VLESS + XHTTP client with split upload/download, so clients can drop xray-core.
+Patches that give sing-box Xray's XHTTP client (split upload/download) and WARP over MASQUE, so clients can drop xray-core.
 
 [![build](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml)
 
-What works today, each item tested against a real Xray server:
+What works today, each XHTTP item tested against a real Xray server:
 
 - Upload and download through two different servers (Xray `downloadSettings`), each with its own address, TLS and XHTTP options.
 - `stream-up` and `packet-up` modes, over HTTP/2, HTTP/3 (QUIC) and HTTP/1.1.
 - VLESS encryption (`mlkem768x25519plus`), X-Padding obfuscation, XMUX, uTLS fingerprints.
 - BBR or Brutal congestion control over HTTP/3 (`force-brutal` in Xray's `finalmask.quicParams`).
+- Cloudflare WARP and Zero Trust over MASQUE (HTTP/3) in the `masque-client` endpoint, Brutal or BBR included. Tested against a local stand-in for Cloudflare's edge, not yet against Cloudflare itself.
 
 ## Contents
 
@@ -33,8 +34,10 @@ What works today, each item tested against a real Xray server:
 
 Xray's XHTTP can send uploads to one server and downloads to another (`downloadSettings`). No sing-box build could, so a sing-box client that needs it has to run xray-core next to it. This repository builds the latest sing-box alpha with the XHTTP client and VLESS encryption of [sing-box-lx](https://github.com/Leadaxe/sing-box-lx), plus the missing split download.
 
-- ✅ Good fit: a sing-box client that talks to an Xray server over VLESS + XHTTP, with or without `downloadSettings`.
-- ❌ Not a fit: you need the Vision flow (`xtls-rprx-vision` is not supported for now), an XHTTP server (client only, keep Xray on the server), or `stream-one` mode with a split download.
+The same goes for Cloudflare WARP over MASQUE: Xray reaches it with `masqueSettings.warp`, but upstream's `masque-client` speaks only standard CONNECT-IP, which Cloudflare's edge does not accept. This repository adds a `warp` mode to it.
+
+- ✅ Good fit: a sing-box client that talks to an Xray server over VLESS + XHTTP, with or without `downloadSettings`; or one that uses WARP or Zero Trust over MASQUE instead of running Xray or usque.
+- ❌ Not a fit: you need the Vision flow (`xtls-rprx-vision` is not supported for now), an XHTTP server (client only, keep Xray on the server), `stream-one` mode with a split download, or WARP over HTTP/2 (TCP), which is not done yet.
 
 ## 🚀 Quick Start
 
@@ -108,7 +111,7 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 
 ## 🔧 Configuration
 
-On top of sing-box-lx's XHTTP options there are two objects in the XHTTP transport: `download` (split upload and download) and `quic_params` (HTTP/3 congestion control). Defaults and behaviour of every field are in the comments of the [complete example](#complete-example). sing-box accepts `//` comments, so the examples work as they are. Replace every `<…>` placeholder with your own value.
+On top of sing-box-lx's XHTTP options there are two objects in the XHTTP transport: `download` (split upload and download) and `quic_params` (HTTP/3 congestion control). The `masque-client` endpoint gets `warp` (Cloudflare WARP, [below](#cloudflare-warp-over-masque)) and the same `quic_params`. Defaults and behaviour of every field are in the comments of the [complete example](#complete-example). sing-box accepts `//` comments, so the examples work as they are. Replace every `<…>` placeholder with your own value.
 
 ### Minimal example
 
@@ -264,21 +267,130 @@ Every field that takes effect is written out with its default; fields that only 
 }
 ```
 
-The matching server side is in [`examples/`](examples/): [`xray-server.json`](examples/xray-server.json) (one Xray inbound) and [`Caddyfile`](examples/Caddyfile) (TLS termination in front of it, on both servers). Every build runs both client examples through `sing-box check` and checks the READMEs carry them unchanged (`test/check-examples.py`); the server example passes `xray run -test`; the Caddyfile has not been run by the author of this document.
+The matching server side is in [`examples/`](examples/): [`xray-server.json`](examples/xray-server.json) (one Xray inbound) and [`Caddyfile`](examples/Caddyfile) (TLS termination in front of it, on both servers). Every build runs all four client examples (these two and the two WARP ones below) through `sing-box check` and checks the READMEs carry them unchanged (`test/check-examples.py`); the server example passes `xray run -test`; the Caddyfile has not been run by the author of this document.
 
 ### HTTP/3
 
 Each half's `alpn` picks its HTTP version, so one half may use HTTP/3 alone. The server must be reachable on UDP: Caddy serves HTTP/3 on the UDP port with the same number as its HTTPS port and still forwards h2c to Xray, so the Caddyfile does not change.
+
+### Cloudflare WARP over MASQUE
+
+The `masque-client` endpoint (upstream, since sing-box 1.15) gains a `warp` object that makes it a Cloudflare WARP or Zero Trust client, the counterpart of Xray's `masque` outbound with `masqueSettings.warp`. Traffic leaves from Cloudflare's network; no server of your own is involved. `quic_params` applies here too. HTTP/3 only for now.
+
+Keys and addresses come from registering a device with [usque](https://github.com/Diniboy1123/usque): `usque register` for free WARP, `usque register --jwt <team token>` for a Zero Trust team (the token is on the success page of `https://<team>.cloudflareaccess.com/warp` and expires within minutes). Its `config.json` holds every value `warp` needs: `private_key`, `endpoint_pub_key` (→ `public_key`), `ipv4` and `ipv6` (→ `address`). A Zero Trust registration gets a `100.96.x.x` address; `172.16.0.2` means it fell back to free WARP. When IPv6 stops working on Zero Trust, `usque enroll` refreshes the addresses.
+
+The fewest fields that connect:
+
+```jsonc
+{
+  "type": "masque-client",
+  "tag": "warp",
+  "server": "162.159.197.2",            // Zero Trust; free WARP 162.159.198.2
+  "server_port": 443,
+  // no version: 3 (HTTP/3); no tls: on, no SNI, the server checked against public_key
+  "warp": {
+    "private_key": "<WARP_PRIVATE_KEY>", // usque config.json: private_key
+    "public_key": "<WARP_PUBLIC_KEY>",   // usque config.json: endpoint_pub_key
+    "address": ["100.96.0.1/32", "2606:4700:11:1000::1/128"] // usque: ipv4, ipv6
+  }
+}
+```
+
+Every field that takes effect, with Brutal on the upload. As a file: [`examples/sing-box-warp.jsonc`](examples/sing-box-warp.jsonc).
+
+```jsonc
+{
+  "type": "masque-client",
+  "tag": "warp",
+  // Xray settings.address / port. Zero Trust 162.159.197.2, free WARP 162.159.198.2, WARP+ 162.159.199.2
+  // (IPv6 2606:4700:102::2, 103::2, 104::2), or a preferred IP or a domain
+  "server": "162.159.197.2",
+  // 443, 500, 1701, 4443, 4500, 8095 or 8443
+  "server_port": 443,
+  // HTTP version: default 3 (HTTP/3, QUIC). With warp only 3 is accepted for now: 2 and 1 fail at load
+  "version": 3,
+  // with warp always true, whatever is written: no fallback to HTTP/2 or HTTP/1.1
+  "disable_version_fallback": true,
+  // Cloudflare WARP mode (Xray masqueSettings.warp); the values come from usque's config.json
+  "warp": {
+    // required: usque private_key, an ECDSA P-256 key (base64 DER or PEM); signs the mTLS client certificate
+    "private_key": "<WARP_PRIVATE_KEY>",
+    // required: usque endpoint_pub_key (base64 DER or PEM); the server certificate must carry it, no CA check
+    "public_key": "<WARP_PUBLIC_KEY>",
+    // required: usque ipv4 / ipv6, at most one of each; a bare address = /32, /128.
+    // Used at once: no ADDRESS_REQUEST; an ADDRESS_ASSIGN from the server replaces them
+    "address": ["100.96.0.1/32", "2606:4700:11:1000::1/128"],
+    // default; the CONNECT-IP authority (Xray masqueSettings.host)
+    "host": "cloudflareaccess.com"
+  },
+  // fixed with warp, no options: :protocol cf-connect-ip on path "/", SETTINGS 0x276, 20-byte QUIC connection IDs
+  // refused with warp: username, password, path, advertise_routes
+  "tls": {
+    "enabled": true,    // with warp always on
+    // empty: no SNI (Xray serverName ""); or a cover SNI
+    "server_name": "",
+    "alpn": ["h3"]      // with warp: omit it or ["h3"]
+    // refused with warp: insecure, certificate*, client_*, disable_sni, ech, utls, reality
+  },
+  // extra request headers. No User-Agent is sent unless set here; Host and Capsule-Protocol are refused with warp
+  "headers": {},
+  // version 3 only (ignored with a warning on 2). Xray: finalmask.quicParams.
+  // Changes only what the client sends: speeds up the upload, the download is Cloudflare's to pace
+  "quic_params": {
+    // "" = quic-go's default (Xray defaults to bbr) | bbr | brutal (Xray: force-brutal)
+    "congestion": "brutal",
+    // brutal, required: send rate in Mbps (Xray: brutalUp "60 mbps"); the real upload bandwidth
+    "up_mbps": 60,
+    // "bbr_profile": "standard",  // bbr only: standard (default) | conservative | aggressive
+    "brutal_debug": false          // brutal only: log ACK and loss rates at debug level
+  },
+  // the QUIC connection
+  "initial_packet_size": 1331,          // default mtu + 51
+  "disable_path_mtu_discovery": false,
+  "keep_alive_period": "10s",           // default 10s (Xray xmux.hKeepAlivePeriod)
+  // "idle_timeout": "30s",             // default: quic-go's 30s
+  // "stream_receive_window": "", "connection_receive_window": "", "max_concurrent_streams": 0: quic-go's defaults
+  // the tunnel
+  "mtu": 1280,                          // default, WARP's MTU
+  "system": false,                      // default: userspace stack; true: a real interface, needs root
+  // "name": "masque",                  // system only: interface name
+  "on_demand": false,                   // true: may disconnect while idle, reconnects on traffic
+  "udp_timeout": "5m",                  // default
+  "udp_mapping": "endpoint_independent",    // default
+  "udp_filtering": "endpoint_independent",  // default
+  "udp_nat_max": 0                      // 0: chosen from total memory
+  // dial fields (detour, bind_interface, ...) work as usual; HTTP/3 is UDP, so a detour must carry UDP
+}
+```
+
+What `warp` changes, checked when the configuration loads:
+
+| Setting | With `warp` |
+|---|---|
+| `version` | 3 only: 2 (HTTP/2) and 1 fail with an error, and so does a build without QUIC |
+| `disable_version_fallback` | Always on |
+| `username`, `password`, `path`, `advertise_routes` | Refused |
+| `headers` | `Host` and `Capsule-Protocol` refused (use `warp.host`). No `User-Agent` unless set here |
+| `tls` | Always enabled. An empty `server_name` sends no SNI. `alpn` only `["h3"]`. Refused: `insecure`, `certificate*`, `client_*`, `disable_sni`, `ech`, `utls`, `reality` |
+| `warp.address` | Required, at most one IPv4 and one IPv6 address |
+| Fixed, no option | `:protocol` `cf-connect-ip` on path `/`, SETTINGS `0x276` (draft HTTP Datagrams) sent and accepted, 20-byte QUIC connection IDs, no ADDRESS_REQUEST |
+
+Without `warp`, `masque-client` behaves exactly as upstream's; `quic_params` is the only addition there.
 
 ### Xray settings without a counterpart
 
 | Xray client setting | Here |
 |---|---|
 | `flow: xtls-rprx-vision` | Not supported for now. Use it on neither side |
-| `finalmask.quicParams` | Congestion control only (`congestion`, `brutalUp`, `bbrProfile`, `debug`), as `quic_params`. Receive windows, `udpHop` and the rest are not supported |
+| `finalmask.quicParams` | Congestion control only (`congestion`, `brutalUp`, `bbrProfile`, `debug`), as `quic_params` (XHTTP transport and `masque-client`). Receive windows, `udpHop` and the rest are not supported |
 | `finalmask.udp` (noise) | Not supported |
 | `testpre` | Not supported |
 | Server-only `xhttpSettings` fields `noSSEHeader`, `scMaxBufferedPosts`, `scStreamUpServerSecs`, `serverMaxHeaderBytes`, and the old `scMaxConcurrentPosts` | Accepted, no effect |
+| MASQUE `alpn: ["h2"]` with `warp` | Not supported yet: `version` 3 only |
+| MASQUE `settings.remoteDns` | A DNS server whose `detour` is the endpoint's tag |
+| MASQUE `xmux` | One QUIC connection, set up again when it drops; `hKeepAlivePeriod` is `keep_alive_period` |
+| MASQUE `masqueSettings.path`, `user`, `pass` with `warp` | Refused |
+| MASQUE `headers` without `User-Agent` | Xray sends a Chrome User-Agent, this sends none (as usque); set `headers.User-Agent` for one |
 | `id`, `encryption`, `flow`, `testpre` inside `downloadSettings` | Drop them: `download` rejects unknown fields. They are VLESS settings, not transport settings, and Xray ignores them there too. See below |
 
 Why `download` has no `uuid` or `encryption`: the two servers carry the two halves of one connection, not two connections. The client makes a single VLESS handshake (UUID, encryption) inside the tunnel, and the Xray inbound joins the upload and download requests by session id before it reads that handshake. So both servers must lead to the same Xray inbound, and there is only one set of VLESS settings, on the outbound itself.
@@ -342,9 +454,10 @@ flowchart LR
 ```
 
 - **Pins, not branches** → `upstream.ref` and `lx.ref` fix what every commit builds, and the daily update moves them only after the full checks pass, so `main` is always a tested combination.
-- **Upstream source, not a fork** → every build starts from the untouched sing-box tag, so there is no merge to maintain. Files are copied in from sing-box-lx, and two small patches connect them.
+- **Upstream source, not a fork** → every build starts from the untouched sing-box tag, so there is no merge to maintain. Files are copied in from sing-box-lx, and a few small patches connect them.
 - **The download endpoint is a second XHTTP client** → it reuses every request-shaping rule (padding, placement, headers, HTTP version) and gets its own connection pool.
 - **Both pooled connections are released together** → a closed or failed connection can never leak a slot in either pool.
+- **WARP mode is upstream's CONNECT-IP client with Cloudflare's quirks switched on** → the protocol name, the draft datagram setting, the connection ID length and static addresses are options of the same code path, so standard MASQUE stays upstream's.
 
 ## 📁 Project Structure
 
@@ -356,8 +469,9 @@ flowchart LR
 ├── patches/
 │   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
 │   ├── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
-│   └── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
-├── overlay/                  # our own files, copied over the tree (libbox build tag)
+│   ├── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
+│   └── 0004-masque-warp.patch         # masque-client warp mode and quic_params, on upstream files
+├── overlay/                  # our own files, copied over the tree (quic_params, WARP mode, libbox build tag)
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
 │   ├── lx-files.py           # applies lx-files.txt to a list of lx paths
@@ -373,7 +487,7 @@ flowchart LR
 │   ├── report-issue.sh       # the issue opened when a build fails
 │   └── notify-telegram.sh    # the Telegram summary
 ├── test/interop/             # runs the client against a real Xray server
-├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile
+├── examples/                 # complete configs: sing-box XHTTP and WARP clients, Xray server, Caddyfile
 ├── .github/workflows/
 │   ├── build.yml             # test, build, promote to main, release
 │   └── update.yml            # the daily update
@@ -387,15 +501,16 @@ Run the unit tests of the patched packages in a prepared tree:
 
 ```bash
 cd work
-go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/ ./protocol/vless/...
-go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
+go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/http/ ./transport/masque/ ./transport/v2rayxhttp/ ./protocol/masque/ ./protocol/vless/...
+go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/v2rayxhttp/ ./protocol/masque/
 ```
 
-Both test packages report `ok`. To change the download or `quic_params` logic, edit the files in `work/`, then regenerate that patch as described in [AGENTS.md](AGENTS.md). Lines added to lx files are marked `// ut:`; new code goes in `*_ut.go` files.
+All four test packages report `ok`. To change the download, `quic_params` or WARP logic, edit the files in `work/`, then regenerate that patch as described in [AGENTS.md](AGENTS.md). Lines added to lx files are marked `// ut:`; new code goes in `*_ut.go` files.
 
 ## 🚧 Limitations & Roadmap
 
 - No Vision flow for now. QUIC offers a choice of congestion control but no window settings, see [Configuration](#-configuration).
+- WARP mode: HTTP/3 only, no HTTP/2 yet. Tested against a local stand-in for Cloudflare's edge built from what usque and Xray do, not yet against Cloudflare. According to [XTLS/BBS#50](https://github.com/XTLS/BBS/issues/50), Cloudflare can tell third-party MASQUE clients from its own; expect the same of this one.
 - The Linux and Windows builds carry upstream's full feature set, naive outbound included. A binary built by hand needs `libcronet.so` next to it, in `LD_LIBRARY_PATH` or in `/usr/lib` to start a naive outbound (`scripts/fetch-cronet.sh work linux amd64 .`).
 - The automated tests run on Linux amd64 against Xray terminating TLS itself. The released Linux and Android builds also work against a real two-server deployment behind Caddy. Not tested: a CDN, REALITY on the download endpoint, dialing through a detour, the Windows builds.
 - Client only. sing-box-lx has no XHTTP server.
@@ -410,6 +525,7 @@ Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at the tag 
 | VLESS encryption | ❌ | ✅ | ✅ |
 | Download through another server | ❌ | ❌ | ✅ |
 | HTTP/3 congestion control (BBR, Brutal) | ❌ | ❌ | ✅ |
+| Cloudflare WARP over MASQUE | ❌ | ✅ | ✅ HTTP/3 only |
 | Everything else in sing-box-lx | ❌ | ✅ | ❌ |
 
 Sync with both is automatic, see [Update & Maintenance](#-update--maintenance).

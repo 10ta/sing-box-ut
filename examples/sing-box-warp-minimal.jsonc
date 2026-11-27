@@ -1,0 +1,12 @@
+{
+  "type": "masque-client",
+  "tag": "warp",
+  "server": "162.159.197.2",            // Zero Trust; free WARP 162.159.198.2
+  "server_port": 443,
+  // no version: 3 (HTTP/3); no tls: on, no SNI, the server checked against public_key
+  "warp": {
+    "private_key": "<WARP_PRIVATE_KEY>", // usque config.json: private_key
+    "public_key": "<WARP_PUBLIC_KEY>",   // usque config.json: endpoint_pub_key
+    "address": ["100.96.0.1/32", "2606:4700:11:1000::1/128"] // usque: ipv4, ipv6
+  }
+}

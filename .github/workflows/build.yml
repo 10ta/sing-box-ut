@@ -196,7 +196,7 @@ jobs:
         run: |
           set -euo pipefail
           tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_xhttp"
-          packages="./option/ ./common/badh2/ ./common/lxtrace/ ./common/tls/ ./transport/v2ray/ ./transport/v2rayxhttp/ ./protocol/vless/..."
+          packages="./option/ ./common/badh2/ ./common/lxtrace/ ./common/tls/ ./common/quicparams/ ./transport/http/ ./transport/masque/ ./transport/v2ray/ ./transport/v2rayxhttp/ ./protocol/masque/ ./protocol/vless/..."
           # $packages is a list on purpose.
           # shellcheck disable=SC2086
           go vet -tags "$tags" $packages

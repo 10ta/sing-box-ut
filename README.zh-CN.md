@@ -2,16 +2,17 @@
 
 [English](README.md) · **简体中文**
 
-一组补丁，让 sing-box 原生支持 VLESS + XHTTP 客户端和上下行分离，客户端不再需要 xray-core。
+一组补丁，让 sing-box 原生支持 Xray 的 XHTTP 客户端（上下行分离）和走 MASQUE 的 WARP，客户端不再需要 xray-core。
 
 [![build](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml/badge.svg)](https://github.com/10ta/sing-box-ut/actions/workflows/build.yml)
 
-目前已经实现的功能，每一项都对真实的 Xray 服务端测过：
+目前已经实现的功能，XHTTP 相关的每一项都对真实的 Xray 服务端测过：
 
 - 上行和下行走两台不同的服务器（Xray 的 `downloadSettings`），各有各的地址、TLS 和 XHTTP 选项。
 - `stream-up` 和 `packet-up` 两种模式，可走 HTTP/2、HTTP/3（QUIC）和 HTTP/1.1。
 - VLESS encryption（`mlkem768x25519plus`）、X-Padding 混淆、XMUX、uTLS 指纹。
 - HTTP/3 的拥塞控制可选 BBR 或 Brutal（Xray `finalmask.quicParams` 的 `force-brutal`）。
+- `masque-client` 端点支持走 MASQUE（HTTP/3）连接 Cloudflare WARP 和 Zero Trust，同样可用 Brutal 或 BBR。只对本地模拟的 Cloudflare 边缘测过，还没对 Cloudflare 本身测过。
 
 ## 目录
 
@@ -33,8 +34,10 @@
 
 Xray 的 XHTTP 可以把上行发到一台服务器、下行发到另一台（`downloadSettings`）。没有哪个 sing-box 构建支持这一点，所以需要它的 sing-box 客户端只能在旁边再跑一个 xray-core。本仓库用最新的 sing-box alpha，加上 [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 的 XHTTP 客户端和 VLESS encryption，再补上缺的上下行分离，构建出成品。
 
-- ✅ 适合：sing-box 客户端通过 VLESS + XHTTP 连接 Xray 服务端，用不用 `downloadSettings` 都可以。
-- ❌ 不适合：需要 Vision flow（暂时不支持 `xtls-rprx-vision`）；需要 XHTTP 服务端（只有客户端，服务端继续用 Xray）；想在 `stream-one` 模式下分离下行。
+走 MASQUE 连 Cloudflare WARP 也是同样的情况：Xray 用 `masqueSettings.warp` 就能连，但上游的 `masque-client` 只会标准的 CONNECT-IP，Cloudflare 的边缘不接受。本仓库给它加了 `warp` 模式。
+
+- ✅ 适合：sing-box 客户端通过 VLESS + XHTTP 连接 Xray 服务端，用不用 `downloadSettings` 都可以；或者想走 MASQUE 用 WARP、Zero Trust，又不想另跑 Xray 或 usque。
+- ❌ 不适合：需要 Vision flow（暂时不支持 `xtls-rprx-vision`）；需要 XHTTP 服务端（只有客户端，服务端继续用 Xray）；想在 `stream-one` 模式下分离下行；需要 WARP 走 HTTP/2（TCP），这部分还没做。
 
 ## 🚀 快速开始
 
@@ -108,7 +111,7 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 
 ## 🔧 配置
 
-相对 sing-box-lx 的 XHTTP 配置，多了两个对象：XHTTP transport 里的 `download`（上下行分离）和 `quic_params`（HTTP/3 拥塞控制）。每个字段的默认值和行为写在[完整示例](#完整示例)的注释里。sing-box 接受 `//` 注释，示例可以直接用。把 `<…>` 占位符换成自己的值。
+相对 sing-box-lx 的 XHTTP 配置，多了两个对象：XHTTP transport 里的 `download`（上下行分离）和 `quic_params`（HTTP/3 拥塞控制）。`masque-client` 端点多了 `warp`（Cloudflare WARP，见[下文](#走-masque-连接-cloudflare-warp)）和同样的 `quic_params`。每个字段的默认值和行为写在[完整示例](#完整示例)的注释里。sing-box 接受 `//` 注释，示例可以直接用。把 `<…>` 占位符换成自己的值。
 
 ### 最小示例
 
@@ -264,21 +267,130 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 }
 ```
 
-对应的服务端在 [`examples/`](examples/) 里：[`xray-server.json`](examples/xray-server.json)（一个 Xray inbound）和 [`Caddyfile`](examples/Caddyfile)（在它前面做 TLS 终结，两台服务器都用）。两份客户端示例每次构建都由 `test/check-examples.py` 跑 `sing-box check`，并核对和两份 README 里的一致；服务端示例通过了 `xray run -test`；Caddyfile 本文档的作者没有实际运行过。
+对应的服务端在 [`examples/`](examples/) 里：[`xray-server.json`](examples/xray-server.json)（一个 Xray inbound）和 [`Caddyfile`](examples/Caddyfile)（在它前面做 TLS 终结，两台服务器都用）。全部四份客户端示例（这两份和下面 WARP 的两份）每次构建都由 `test/check-examples.py` 跑 `sing-box check`，并核对和两份 README 里的一致；服务端示例通过了 `xray run -test`；Caddyfile 本文档的作者没有实际运行过。
 
 ### HTTP/3
 
 上下行各自的 `alpn` 决定 HTTP 版本，可以只有一边走 HTTP/3。服务器必须能通过 UDP 访问：Caddy 在与 HTTPS 端口同号的 UDP 端口上提供 HTTP/3，转发给 Xray 时仍然是 h2c，所以 Caddyfile 不用改。
+
+### 走 MASQUE 连接 Cloudflare WARP
+
+`masque-client` 端点（上游自 sing-box 1.15 起提供）多了一个 `warp` 对象，开启后它就是 Cloudflare WARP 或 Zero Trust 客户端，对应 Xray 带 `masqueSettings.warp` 的 `masque` 出站。流量从 Cloudflare 的网络出去，不需要自己的服务器。`quic_params` 在这里同样适用。目前只支持 HTTP/3。
+
+密钥和地址来自用 [usque](https://github.com/Diniboy1123/usque) 注册设备：免费 WARP 用 `usque register`，Zero Trust 团队用 `usque register --jwt <team token>`（token 在 `https://<team>.cloudflareaccess.com/warp` 登录成功页上，几分钟内过期）。生成的 `config.json` 里有 `warp` 需要的全部值：`private_key`、`endpoint_pub_key`（→ `public_key`）、`ipv4` 和 `ipv6`（→ `address`）。Zero Trust 注册拿到的是 `100.96.x.x` 地址；如果是 `172.16.0.2`，说明退回成了免费 WARP。Zero Trust 下 IPv6 不通时，运行 `usque enroll` 刷新地址。
+
+能连上的最少字段：
+
+```jsonc
+{
+  "type": "masque-client",
+  "tag": "warp",
+  "server": "162.159.197.2",            // Zero Trust；免费 WARP 用 162.159.198.2
+  "server_port": 443,
+  // 不写 version：3（HTTP/3）；不写 tls：开启、不发 SNI、按 public_key 校验服务端
+  "warp": {
+    "private_key": "<WARP_PRIVATE_KEY>", // usque config.json 的 private_key
+    "public_key": "<WARP_PUBLIC_KEY>",   // usque config.json 的 endpoint_pub_key
+    "address": ["100.96.0.1/32", "2606:4700:11:1000::1/128"] // usque 的 ipv4、ipv6
+  }
+}
+```
+
+所有生效的字段，上行用 Brutal。文件：[`examples/sing-box-warp.jsonc`](examples/sing-box-warp.jsonc)。
+
+```jsonc
+{
+  "type": "masque-client",
+  "tag": "warp",
+  // Xray 的 settings.address / port。Zero Trust 162.159.197.2，免费 WARP 162.159.198.2，WARP+ 162.159.199.2
+  // （IPv6 为 2606:4700:102::2、103::2、104::2），也可以填优选 IP 或域名
+  "server": "162.159.197.2",
+  // 443、500、1701、4443、4500、8095 或 8443
+  "server_port": 443,
+  // HTTP 版本：默认 3（HTTP/3，QUIC）。开 warp 时目前只接受 3：写 2 或 1 会在加载时报错
+  "version": 3,
+  // 开 warp 时不管怎么写都是 true：不回退到 HTTP/2 或 HTTP/1.1
+  "disable_version_fallback": true,
+  // Cloudflare WARP 模式（Xray 的 masqueSettings.warp）；值都来自 usque 的 config.json
+  "warp": {
+    // 必填：usque 的 private_key，ECDSA P-256 私钥（base64 DER 或 PEM）；用来签 mTLS 客户端证书
+    "private_key": "<WARP_PRIVATE_KEY>",
+    // 必填：usque 的 endpoint_pub_key（base64 DER 或 PEM）；服务端证书必须是这把公钥，不做 CA 校验
+    "public_key": "<WARP_PUBLIC_KEY>",
+    // 必填：usque 的 ipv4 / ipv6，各至多一个；不带掩码时为 /32、/128。
+    // 隧道建立后直接使用，不发 ADDRESS_REQUEST；服务端若下发 ADDRESS_ASSIGN，以服务端为准
+    "address": ["100.96.0.1/32", "2606:4700:11:1000::1/128"],
+    // 默认值；CONNECT-IP 的 authority（Xray 的 masqueSettings.host）
+    "host": "cloudflareaccess.com"
+  },
+  // 开 warp 时固定、没有选项：:protocol 为 cf-connect-ip、路径 "/"、SETTINGS 0x276、QUIC 连接 ID 20 字节
+  // 开 warp 时拒绝：username、password、path、advertise_routes
+  "tls": {
+    "enabled": true,    // 开 warp 时总是开启
+    // 留空：不发 SNI（Xray 的 serverName ""）；也可以填伪装 SNI
+    "server_name": "",
+    "alpn": ["h3"]      // 开 warp 时：不写，或写 ["h3"]
+    // 开 warp 时拒绝：insecure、certificate*、client_*、disable_sni、ech、utls、reality
+  },
+  // 额外请求头。不在这里设 User-Agent 就不发；开 warp 时拒绝 Host 和 Capsule-Protocol
+  "headers": {},
+  // 只对 version 3 生效（version 2 时忽略并打警告）。Xray：finalmask.quicParams。
+  // 只改变客户端发出去的速度：提升上行，下行由 Cloudflare 那边控制
+  "quic_params": {
+    // "" = quic-go 默认（Xray 默认 bbr）| bbr | brutal（Xray：force-brutal）
+    "congestion": "brutal",
+    // brutal 必填：发送速率，单位 Mbps（Xray：brutalUp "60 mbps"）；填真实的上行带宽
+    "up_mbps": 60,
+    // "bbr_profile": "standard",  // 仅 bbr：standard（默认）| conservative | aggressive
+    "brutal_debug": false          // 仅 brutal：在 debug 级别记录 ACK 率和丢包率
+  },
+  // QUIC 连接
+  "initial_packet_size": 1331,          // 默认 mtu + 51
+  "disable_path_mtu_discovery": false,
+  "keep_alive_period": "10s",           // 默认 10s（Xray 的 xmux.hKeepAlivePeriod）
+  // "idle_timeout": "30s",             // 默认：quic-go 的 30s
+  // "stream_receive_window": "", "connection_receive_window": "", "max_concurrent_streams": 0：quic-go 默认值
+  // 隧道
+  "mtu": 1280,                          // 默认值，与 WARP 的 MTU 一致
+  "system": false,                      // 默认：用户态网络栈；true：建真实网卡，需要 root
+  // "name": "masque",                  // 仅 system：网卡名
+  "on_demand": false,                   // true：空闲时允许断开，有流量再连
+  "udp_timeout": "5m",                  // 默认值
+  "udp_mapping": "endpoint_independent",    // 默认值
+  "udp_filtering": "endpoint_independent",  // 默认值
+  "udp_nat_max": 0                      // 0：按总内存自动选择
+  // 拨号字段（detour、bind_interface……）照常可用；HTTP/3 走 UDP，detour 必须能转发 UDP
+}
+```
+
+开启 `warp` 后的变化，加载配置时检查：
+
+| 设置 | 开启 `warp` 时 |
+|---|---|
+| `version` | 只能是 3：写 2（HTTP/2）或 1 会报错，没有 QUIC 的构建同样报错 |
+| `disable_version_fallback` | 总是开启 |
+| `username`、`password`、`path`、`advertise_routes` | 拒绝 |
+| `headers` | 拒绝 `Host` 和 `Capsule-Protocol`（用 `warp.host`）。不在这里设 `User-Agent` 就不发 |
+| `tls` | 总是开启。`server_name` 留空时不发 SNI。`alpn` 只能是 `["h3"]`。拒绝：`insecure`、`certificate*`、`client_*`、`disable_sni`、`ech`、`utls`、`reality` |
+| `warp.address` | 必填，IPv4、IPv6 各至多一个 |
+| 固定、没有选项 | `:protocol` 为 `cf-connect-ip`、路径 `/`，发送并接受 SETTINGS `0x276`（草案版 HTTP Datagrams），QUIC 连接 ID 20 字节，不发 ADDRESS_REQUEST |
+
+不开 `warp` 时，`masque-client` 的行为和上游完全一样，唯一的新增是 `quic_params`。
 
 ### 没有对应项的 Xray 设置
 
 | Xray 客户端设置 | 这里 |
 |---|---|
 | `flow: xtls-rprx-vision` | 暂时不支持。两端都不要配 |
-| `finalmask.quicParams` | 只支持拥塞控制（`congestion`、`brutalUp`、`bbrProfile`、`debug`），即 `quic_params`。接收窗口、`udpHop` 等其他项不支持 |
+| `finalmask.quicParams` | 只支持拥塞控制（`congestion`、`brutalUp`、`bbrProfile`、`debug`），即 `quic_params`（XHTTP transport 和 `masque-client`）。接收窗口、`udpHop` 等其他项不支持 |
 | `finalmask.udp`（noise） | 不支持 |
 | `testpre` | 不支持 |
 | `xhttpSettings` 里只对服务端有用的 `noSSEHeader`、`scMaxBufferedPosts`、`scStreamUpServerSecs`、`serverMaxHeaderBytes`，以及旧的 `scMaxConcurrentPosts` | 写了不报错，但不生效 |
+| MASQUE 开 `warp` 时的 `alpn: ["h2"]` | 暂不支持：只能用 `version` 3 |
+| MASQUE 的 `settings.remoteDns` | 加一个 DNS 服务器，`detour` 填这个端点的 tag |
+| MASQUE 的 `xmux` | 只有一条 QUIC 连接，断了会重建；`hKeepAlivePeriod` 对应 `keep_alive_period` |
+| MASQUE 开 `warp` 时的 `masqueSettings.path`、`user`、`pass` | 拒绝 |
+| MASQUE 的 `headers` 没写 `User-Agent` | Xray 会发 Chrome 的 User-Agent，这里不发（和 usque 一样）；要发就设 `headers.User-Agent` |
 | `downloadSettings` 里的 `id`、`encryption`、`flow`、`testpre` | 去掉：`download` 遇到不认识的字段会报错。它们是 VLESS 的设置，不是传输层设置，Xray 在这个位置也会忽略它们。见下 |
 
 为什么 `download` 里没有 `uuid` 和 `encryption`：两台服务器承载的是同一条连接的两半，不是两条连接。客户端只在隧道里做一次 VLESS 握手（UUID、encryption），Xray 的 inbound 先按 session id 把上行和下行请求拼起来，再读这次握手。所以两台服务器最终必须通到同一个 Xray inbound，VLESS 设置也只有一组，写在出站本身。
@@ -342,9 +454,10 @@ flowchart LR
 ```
 
 - **钉住版本，不靠分支** → `upstream.ref` 和 `lx.ref` 确定每个提交构建什么，每日更新只在全部检查通过后才移动它们，所以 `main` 上始终是测过的组合。
-- **用上游源码，不 fork** → 每次构建都从原样的 sing-box tag 开始，没有合并要维护。文件从 sing-box-lx 复制进来，再用两个小补丁接上。
+- **用上游源码，不 fork** → 每次构建都从原样的 sing-box tag 开始，没有合并要维护。文件从 sing-box-lx 复制进来，再用几个小补丁接上。
 - **下行端点就是第二个 XHTTP 客户端** → 请求构造的所有规则（padding、placement、headers、HTTP 版本）直接复用，连接池各用各的。
 - **两条池化连接一起释放** → 连接关闭或失败时，两个池都不会漏掉占用。
+- **WARP 模式就是上游的 CONNECT-IP 客户端打开了 Cloudflare 的那些特殊行为** → 协议名、草案版 datagram 设置、连接 ID 长度和静态地址都是同一条代码路径上的选项，标准 MASQUE 仍是上游的原样。
 
 ## 📁 项目结构
 
@@ -356,8 +469,9 @@ flowchart LR
 ├── patches/
 │   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
 │   ├── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
-│   └── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
-├── overlay/                  # our own files, copied over the tree (libbox build tag)
+│   ├── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
+│   └── 0004-masque-warp.patch         # masque-client warp mode and quic_params, on upstream files
+├── overlay/                  # our own files, copied over the tree (quic_params, WARP mode, libbox build tag)
 ├── scripts/
 │   ├── prepare.sh            # assembles the source tree
 │   ├── lx-files.py           # applies lx-files.txt to a list of lx paths
@@ -373,7 +487,7 @@ flowchart LR
 │   ├── report-issue.sh       # the issue opened when a build fails
 │   └── notify-telegram.sh    # the Telegram summary
 ├── test/interop/             # runs the client against a real Xray server
-├── examples/                 # complete configs: sing-box client, Xray server, Caddyfile
+├── examples/                 # complete configs: sing-box XHTTP and WARP clients, Xray server, Caddyfile
 ├── .github/workflows/
 │   ├── build.yml             # test, build, promote to main, release
 │   └── update.yml            # the daily update
@@ -387,15 +501,16 @@ flowchart LR
 
 ```bash
 cd work
-go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/ ./protocol/vless/...
-go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./transport/v2rayxhttp/
+go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/http/ ./transport/masque/ ./transport/v2rayxhttp/ ./protocol/masque/ ./protocol/vless/...
+go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/v2rayxhttp/ ./protocol/masque/
 ```
 
-两个测试包都显示 `ok`。要改下行或 `quic_params` 的逻辑，先改 `work/` 里的文件，再按 [AGENTS.md](AGENTS.md) 的说明重新生成对应的补丁。加进 lx 文件的行都带 `// ut:` 标记；新代码放在 `*_ut.go` 文件里。
+四个测试包都显示 `ok`。要改下行、`quic_params` 或 WARP 的逻辑，先改 `work/` 里的文件，再按 [AGENTS.md](AGENTS.md) 的说明重新生成对应的补丁。加进 lx 文件的行都带 `// ut:` 标记；新代码放在 `*_ut.go` 文件里。
 
 ## 🚧 局限与路线
 
 - 暂时不支持 Vision flow；QUIC 只能选拥塞控制，不能调窗口，见[配置](#-配置)。
+- WARP 模式只支持 HTTP/3，HTTP/2 还没做。只对照 usque 和 Xray 的做法搭了本地模拟的 Cloudflare 边缘来测，还没对 Cloudflare 测过。据 [XTLS/BBS#50](https://github.com/XTLS/BBS/issues/50)，Cloudflare 能区分第三方 MASQUE 客户端和官方客户端，这个实现大概也一样。
 - Linux 和 Windows 的构建带上游的全部功能，包括 naive 出站。自己手动编出的二进制要启动 naive 出站，需要把 `libcronet.so` 放在它旁边、`LD_LIBRARY_PATH` 里或 `/usr/lib` 下（`scripts/fetch-cronet.sh work linux amd64 .`）。
 - 自动化测试跑在 Linux amd64 上，对接的是自己做 TLS 终结的 Xray。发布的 Linux 和 Android 构建也在真实的双服务器部署（前面是 Caddy）上跑通了。没测过：CDN、下行端点用 REALITY、经 detour 拨号、Windows 构建。
 - 只有客户端。sing-box-lx 没有 XHTTP 服务端。
@@ -410,6 +525,7 @@ go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checkli
 | VLESS encryption | ❌ | ✅ | ✅ |
 | 下行走另一台服务器 | ❌ | ❌ | ✅ |
 | HTTP/3 拥塞控制（BBR、Brutal） | ❌ | ❌ | ✅ |
+| 走 MASQUE 连接 Cloudflare WARP | ❌ | ✅ | ✅ 仅 HTTP/3 |
 | sing-box-lx 的其他改动 | ❌ | ✅ | ❌ |
 
 与两者的同步都是自动的，见[更新与维护](#-更新与维护)。
