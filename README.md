@@ -466,6 +466,7 @@ flowchart LR
 ├── upstream.ref              # the sing-box tag the build starts from
 ├── lx.ref                    # the sing-box-lx commit the build copies files from
 ├── lx-files.txt              # which sing-box-lx files are copied
+├── android-client.ref        # Android client commits no longer on its dev branch
 ├── patches/
 │   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
 │   ├── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
@@ -478,7 +479,7 @@ flowchart LR
 │   ├── build.sh              # compiles sing-box from it
 │   ├── fetch-cronet.sh       # downloads the library the naive outbound needs
 │   ├── package-deb.sh        # packs a .deb
-│   ├── android-client.sh     # checks out the matching Android client
+│   ├── android-client.sh     # checks out the matching Android client (android-client.ref)
 │   ├── make-keystore.sh      # creates the APK signing keystore, once
 │   ├── go-version.sh         # the Go version upstream builds with
 │   ├── auto-update.sh        # decides what the daily update tries

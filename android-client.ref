@@ -1,0 +1,8 @@
+# Android client (SagerNet/sing-box-for-android) commit per sing-box version,
+# for versions whose "Bump version <version>" commit is no longer on the
+# client's dev branch (upstream rewrites dev). One "<version> <full SHA>" per
+# line; scripts/android-client.sh fetches the commit by its SHA, which GitHub
+# keeps serving after a force push.
+# Where to find a SHA: the "Fetch the Android client" step of the last build
+# that produced an APK prints "android-client: dev commit for <version>: <SHA>".
+1.15.0-alpha.13 07376b13886242facaf4c5e1f642b432dda8be4a

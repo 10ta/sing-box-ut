@@ -161,3 +161,9 @@
 - **测试**：本地搭了一个模拟边缘（quic-go http3 服务端，只发 `0x276`、要求客户端证书），端到端验证 mTLS、钉死、`cf-connect-ip`、双向草案 datagram、静态地址、不发 capsule、不发 UA。变异检查：去掉草案 datagram、协议名或 `0x276` 任意一项，测试都会失败。坑：quic-go 服务端只要客户端声明 H3_DATAGRAM 就自己起 datagram 读取循环，模拟边缘直接读 QUIC 连接会和它抢包，所以模拟边缘改为从请求流收发。
 - **本地验证**：vet（linux / windows / android / 不带 `with_quic`）、`-race` 单测、`check-examples.py`（四份示例）、全部 7 个互通用例。`stream-up:brutal` 是第一次在本地跑通（这次 GitHub release 能下载 Xray）。
 - **待办**：在真实 Zero Trust 上实测（用户）；需要的话再做 h2（`version` 2）：Cloudflare 的 h2 握手也不标准（usque 发 `cf-connect-proto: cf-connect-ip` 头和 `pq-enabled: false`），lx 的 `transport/masque/client_h2.go` 可参考。
+
+## 2026-11-27：APK 编译失败（客户端 dev 分支被重写）
+- 现象：ut.6 的 Build APK 失败，Kotlin 报 `ProxyService` / `VPNService` 没实现 `createAutoRedirect`、`usePlatformAutoRedirect`。libbox（Go）那步是过的，和 WARP 补丁无关。
+- 原因：上游发 alpha.14 时重写了 sing-box-for-android 的 dev 分支，之前每个 alpha 的 `Bump version` 提交都没了；`android-client.sh` 在 dev 上找不到 `Bump version 1.15.0-alpha.13`，静默退回 tag 钉的 1.14.4 客户端。
+- 修法：新增 `android-client.ref`，记"版本 → 客户端提交"，按完整 SHA 拉取（被 force push 掉的提交 GitHub 仍然能按 SHA 取到，本地验证过 `07376b1`）。顺序：ref 文件 → dev 上的 `Bump version` → 仅正式版退回钉住的提交；alpha 两者都没有就当场报错，不再拖到 Kotlin 编译才失败。SHA 从最后一次出了 APK 的构建日志里拿（`Fetch the Android client` 这一步）。
+- 另：sing-box alpha.14 已发布，`0001` 打不上（`protocol/vless/outbound.go` 变了），并带来 quic-go 0.66、Go 1.27，要单独适配；预计每日更新会为它开 issue。

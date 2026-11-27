@@ -27,6 +27,7 @@ on:
       - scripts/**
       - test/**
       - lx-files.txt
+      - android-client.ref
       - lx.ref
       - upstream.ref
       - .github/workflows/build.yml
