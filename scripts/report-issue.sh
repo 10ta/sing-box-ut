@@ -25,7 +25,11 @@ fi
 
 excerpt() { # job log on stdin -> the lines worth reading
   # Drop timestamps and colour codes, and the commands GitHub echoes.
-  sed -E -e 's/^\xEF\xBB\xBF//' -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' -e 's/\x1b\[[0-9;]*m//g' |
+  # Every terminal escape sequence and control character goes: the excerpt
+  # lands in an issue body.
+  sed -E -e 's/^\xEF\xBB\xBF//' -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' \
+    -e 's/\x1b\][^\x07\x1b]*(\x07|\x1b\\)//g' -e 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g' -e 's/\x1b[()][0-9A-Za-z]//g' -e 's/\x1b.//g' -e 's/\r$//' |
+    tr -d '\000-\010\013\014\016-\037' |
     grep -v -E '^\[36;1m|^##\[(group|endgroup)\]' > "$tmp/log" || true
   # The step that failed ends at the first "##[error]"; read up to there.
   local end
@@ -48,13 +52,62 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 job_section() { # NAME FAILED_STEPS TEXT
+  printf 'job: %s\nstep: %s\n%s\n' "$1" "${2:-?}" "$3" >> "$tmp/all"
   printf '\n#### %s\n失败的步骤：%s\n```text\n%s\n```\n' "$1" "${2:-?}" "$3"
 }
 
+# classify < all failed jobs' names, steps and excerpts -> "- type: where to start" lines.
+# The types are the failure classes seen so far (docs/NOTES.zh-CN.md, 2026-11-27);
+# a failure can be of several.
+classify() {
+  local all=$tmp/all found=""
+  touch "$all"
+  hit() { grep -q -E "$1" "$all"; }
+  add() { found+="- **$1**：$2"$'\n'; }
+  if hit 'PATCH CONFLICT|patch does not apply|patch failed:'; then
+    add "补丁冲突" "上游或 lx 改了补丁碰到的行。看 Prepare source 的日志：三方合并失败时会列出冲突文件；在新版本上重做该补丁并更新 patches/BASE（AGENTS.md → Commands）"
+  fi
+  if hit 'lx-files.txt does not fit'; then
+    add "lx 文件清单不匹配" "lx 改了文件结构，调整 lx-files.txt；缺 lx 专有符号时写桩，不要多复制 lx 文件"
+  fi
+  if hit '\.go:[0-9]+:[0-9]+: |undefined: |not enough arguments|too many arguments|cannot use |has no field or method'; then
+    add "编译失败" "上游或 lx 的 Go API 变了：按报错位置改 overlay 或补丁"
+  fi
+  if hit 'invalid reference to|relocation target|^link: |linkname'; then
+    add "链接失败" "工具链或链接参数问题：测试和构建都要带 release/LDFLAGS（-checklinkname=0）"
+  fi
+  if hit '^--- FAIL|^FAIL[[:space:]]'; then
+    add "单元测试失败" "行为变了：先单独跑失败的测试（AGENTS.md → Single test）"
+  fi
+  if hit 'step: .*[Ii]nterop|== (stream|packet)-'; then
+    add "互通测试失败" "和钉住的 Xray 版本不兼容：test/interop/run.sh 单跑失败的用例"
+  fi
+  if hit '^FAIL: .*(README|sing-box check|jsonc)'; then
+    add "示例检查失败" "test/check-examples.py：示例文件、两份 README 和 sing-box check 三者要一致"
+  fi
+  if hit 'does not implement abstract members|android-client:|step: .*(APK|libbox|Android client)'; then
+    add "Android 构建失败" "多半是客户端和 libbox 版本不配：看 android-client.ref 和 Fetch the Android client 的日志"
+  fi
+  if hit 'Could not resolve host|Connection reset|connection timed out|TLS handshake timeout|HTTP 50[0-9]|rate limit|Unable to download'; then
+    add "网络或外部服务" "可能是偶发的：先重跑（Actions → update → Run workflow）"
+  fi
+  if hit 'log not available'; then
+    add "日志未取到" "report-issue.sh 没拿到 job 日志，原因见各 job 小节；问题类型可能不全"
+  fi
+  [ -n "$found" ] || found="- **未分类**：看下面各 job 的日志"$'\n'
+  printf '%s' "$found"
+}
+
 fetch_log() { # JOB_ID -> the job log; a job's log can lag behind its result, so retry
+  # curl, not "gh api": newer gh refuses to print a response that contains
+  # terminal escape sequences, and job logs always do (issue #2 got no log).
+  # The API answers with a redirect to a pre-signed URL; curl does not send
+  # the token on to that other host.
   local attempt
   for attempt in 1 2 3 4; do
-    if gh api "repos/$repo/actions/jobs/$1/logs" > "$tmp/job.log" 2> "$tmp/job.err"; then
+    if curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+      "${GITHUB_API_URL:-https://api.github.com}/repos/$repo/actions/jobs/$1/logs" \
+      -o "$tmp/job.log" 2> "$tmp/job.err" && [ -s "$tmp/job.log" ]; then
       return 0
     fi
     [ "$attempt" = 4 ] || sleep 15
@@ -83,6 +136,7 @@ else
       | "\(.id)\t\(.name)\t\([.steps[]? | select(.conclusion == "failure") | .name] | join(", "))"')
 fi
 [ -n "$failed" ] || failed=$'\n(no failed job found; see the run)\n'
+types=$(classify)
 
 if [ "$MODE" = candidate ]; then
   next_steps="- main 没有被改动，已发布的版本也没有变。
@@ -107,6 +161,8 @@ body="<!-- ut-base: $BASE_SHA -->
 | 基于 main | \`$BASE_SHA\` |
 | 运行 | $RUN_URL |
 $details
+### 问题类型
+$types
 ### 失败的 job
 $failed
 ### 接下来

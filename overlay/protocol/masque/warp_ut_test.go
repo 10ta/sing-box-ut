@@ -85,7 +85,10 @@ func TestWARPOptionsRewrite(t *testing.T) {
 	if ut.masque.Protocol != "cf-connect-ip" || len(ut.masque.Address) != 2 || ut.masque.Address[0] != wantAddress[0] || ut.masque.Address[1] != wantAddress[1] {
 		t.Fatalf("masque = %+v", ut.masque)
 	}
-	if ut.http3.ConnectionIDLength != 20 || ut.http3.AdditionalSettings[http.SettingDatagramDraft00] != 1 || !ut.http3.DraftDatagrams {
+	// SkipExtendedConnectCheck is only checked here: quic-go's server always
+	// announces Extended CONNECT, so the fake edge cannot leave it out.
+	if ut.http3.ConnectionIDLength != 20 || ut.http3.AdditionalSettings[http.SettingDatagramDraft00] != 1 || !ut.http3.DraftDatagrams ||
+		!ut.http3.SkipExtendedConnectCheck {
 		t.Fatalf("http3 = %+v", ut.http3)
 	}
 	if ut.http3.Congestion.Enabled() {
@@ -221,7 +224,7 @@ func TestMASQUEQUICParams(t *testing.T) {
 	options = option.MASQUEClientEndpointOptions{Path: "/x", Version: 2}
 	ut, err = newClientUT(log.StdLogger(), &options, 2)
 	if err != nil || ut.masque.Protocol != "" || ut.masque.Address != nil || ut.http3.ConnectionIDLength != 0 ||
-		ut.http3.AdditionalSettings != nil || ut.http3.DraftDatagrams || ut.http3.Congestion.Enabled() ||
+		ut.http3.AdditionalSettings != nil || ut.http3.DraftDatagrams || ut.http3.SkipExtendedConnectCheck || ut.http3.Congestion.Enabled() ||
 		options.Path != "/x" || options.TLS != nil || options.Headers != nil || options.DisableVersionFallback {
 		t.Fatalf("plain: %+v, %v", ut, err)
 	}

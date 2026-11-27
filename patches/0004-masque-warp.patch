@@ -12,7 +12,7 @@ index f25ea39..2c3fb44 100644
  	HTTP3Options           QUICOptions          `json:"-"`
  }
 diff --git a/protocol/masque/client.go b/protocol/masque/client.go
-index f87fc3b..d8ac2e4 100644
+index 19bc4b8..c2f3437 100644
 --- a/protocol/masque/client.go
 +++ b/protocol/masque/client.go
 @@ -77,6 +77,10 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
@@ -34,7 +34,7 @@ index f87fc3b..d8ac2e4 100644
  	})
  	if err != nil {
  		return nil, err
-@@ -140,6 +145,7 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
+@@ -142,6 +147,7 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
  		Path:            options.Path,
  		AdvertiseRoutes: options.AdvertiseRoutes,
  		Handler:         clientEndpoint,
@@ -43,7 +43,7 @@ index f87fc3b..d8ac2e4 100644
  	if err != nil {
  		httpClient.Close()
 diff --git a/transport/http/client.go b/transport/http/client.go
-index b90889a..16285dc 100644
+index b0d17ca..b90182e 100644
 --- a/transport/http/client.go
 +++ b/transport/http/client.go
 @@ -51,6 +51,7 @@ type ClientOptions struct {
@@ -55,56 +55,78 @@ index b90889a..16285dc 100644
  
  type http3Client interface {
 diff --git a/transport/http/client_h3.go b/transport/http/client_h3.go
-index 5dc616c..c17dd35 100644
+index 1570faa..ab1569a 100644
 --- a/transport/http/client_h3.go
 +++ b/transport/http/client_h3.go
-@@ -39,6 +39,8 @@ type http3ClientImpl struct {
+@@ -41,11 +41,13 @@ type http3ClientImpl struct {
  	access        sync.Mutex
- 	conn          *http3.ClientConn
- 	rawConn       net.Conn
+ 	conn          *http3Conn
+ 	dial          *dialOffer
 +	ut            HTTP3UTOptions // ut: see client_ut.go
-+	quicConn      *quic.Conn     // ut: the QUIC connection under conn
  }
  
- func newHTTP3Client(options ClientOptions, authorization string) (http3Client, error) {
-@@ -70,7 +72,8 @@ func newHTTP3Client(options ClientOptions, authorization string) (http3Client, e
+ type http3Conn struct {
+ 	*http3.ClientConn
+-	streams int
++	streams  int
++	quicConn *quic.Conn // ut: the QUIC connection under ClientConn
+ }
+ 
+ func newHTTP3Client(options ClientOptions, authorization string, closeIdle *atomic.Bool) (http3Client, error) {
+@@ -77,8 +79,9 @@ func newHTTP3Client(options ClientOptions, authorization string, closeIdle *atom
  		headers:       headers,
  		authorization: authorization,
  		quicConfig:    quicConfig,
 -		transport:     &http3.Transport{EnableDatagrams: true, DisableCompression: true},
 +		transport:     &http3.Transport{EnableDatagrams: true, DisableCompression: true, AdditionalSettings: options.HTTP3UT.AdditionalSettings},
+ 		closeIdle:     closeIdle,
 +		ut:            options.HTTP3UT, // ut: also AdditionalSettings above
  	}, nil
  }
  
-@@ -91,7 +94,7 @@ func (c *http3ClientImpl) acquire(ctx context.Context) (*http3.ClientConn, error
- 		}
- 		return nil, E.Cause1(ErrHTTP3Unavailable, err)
+@@ -114,7 +117,7 @@ func (c *http3ClientImpl) dialConn(ctx context.Context, offer *dialOffer) (*http
+ 	var quicConn *quic.Conn
+ 	rawConn, err := c.dialer.DialContext(adapter.ContextForMultiplexSession(ctx), N.NetworkUDP, c.server)
+ 	if err == nil {
+-		quicConn, err = qtls.DialEarly(ctx, rawConn, c.tlsConfig, c.quicConfig)
++		quicConn, err = c.dialQUICUT(ctx, rawConn) // ut: was qtls.DialEarly
+ 		if err != nil {
+ 			rawConn.Close()
+ 		} else {
+@@ -142,7 +145,7 @@ func (c *http3ClientImpl) dialConn(ctx context.Context, offer *dialOffer) (*http
+ 		quicConn.CloseWithError(0, "")
+ 		return nil, net.ErrClosed
  	}
--	quicConn, err := qtls.DialEarly(ctx, rawConn, c.tlsConfig, c.quicConfig)
-+	quicConn, err := c.dialQUICUT(ctx, rawConn) // ut: was qtls.DialEarly
- 	if err != nil {
- 		rawConn.Close()
- 		if ctx.Err() != nil {
-@@ -101,6 +104,7 @@ func (c *http3ClientImpl) acquire(ctx context.Context) (*http3.ClientConn, error
- 	}
- 	c.conn = c.transport.NewClientConn(quicConn)
- 	c.rawConn = rawConn
-+	c.quicConn = quicConn // ut
+-	c.conn = &http3Conn{ClientConn: c.transport.NewClientConn(quicConn), streams: 1}
++	c.conn = &http3Conn{ClientConn: c.transport.NewClientConn(quicConn), streams: 1, quicConn: quicConn} // ut: quicConn
  	return c.conn, nil
  }
  
-@@ -182,7 +186,7 @@ func (c *http3ClientImpl) OpenTunnel(ctx context.Context, request tunnelRequest)
+@@ -169,7 +172,7 @@ func (c *http3ClientImpl) openRequestStream(ctx context.Context, extendedConnect
+ 		if extendedConnect {
+ 			select {
+ 			case <-conn.ReceivedSettings():
+-				if !conn.Settings().EnableExtendedConnect {
++				if !conn.Settings().EnableExtendedConnect && !c.ut.SkipExtendedConnectCheck { // ut: SkipExtendedConnectCheck
+ 					err = errHTTP3ExtendedConnectUnsupported
+ 				}
+ 			case <-conn.Context().Done():
+@@ -276,11 +279,11 @@ func (c *http3ClientImpl) OpenTunnel(ctx context.Context, request tunnelRequest)
  	if err != nil {
  		return nil, err
  	}
--	return &http3RequestDatagramStream{stream: stream, datagramsEnabled: clientConn.Settings().EnableDatagrams}, nil
-+	return c.tunnelStreamUT(stream, clientConn) // ut: was &http3RequestDatagramStream{...}
+-	return &http3RequestDatagramStream{
++	return c.tunnelStreamUT(&http3RequestDatagramStream{ // ut: tunnelStreamUT (draft datagrams)
+ 		stream:           stream,
+ 		datagramsEnabled: conn.Settings().EnableDatagrams,
+ 		onClose:          func() { c.release(conn, keepSession) },
+-	}, nil
++	}, conn), nil
  }
  
- func (c *http3ClientImpl) ResetConnection() {
+ func (c *http3ClientImpl) CloseIdleConnections() {
 diff --git a/transport/masque/client.go b/transport/masque/client.go
-index 494ec8f..25d2d58 100644
+index 67415ca..9e653bf 100644
 --- a/transport/masque/client.go
 +++ b/transport/masque/client.go
 @@ -40,6 +40,7 @@ type ClientOptions struct {
@@ -140,7 +162,7 @@ index 494ec8f..25d2d58 100644
  	cancelDial()
  	if err != nil {
  		return false, err
-@@ -183,10 +186,7 @@ func (c *Client) connect() (bool, error) {
+@@ -179,10 +182,7 @@ func (c *Client) connect() (bool, error) {
  	current.session = newSession(c.ctx, stream, current, c.handler.FrontHeadroom)
  	c.current = current
  	c.access.Unlock()

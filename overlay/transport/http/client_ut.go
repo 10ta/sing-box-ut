@@ -20,6 +20,11 @@ type HTTP3UTOptions struct {
 	// SETTINGS_H3_DATAGRAM; datagrams of a tunnel are then read straight off
 	// the QUIC connection.
 	DraftDatagrams bool
+	// SkipExtendedConnectCheck opens CONNECT-IP tunnels even when the
+	// server's SETTINGS do not announce Extended CONNECT
+	// (SETTINGS_ENABLE_CONNECT_PROTOCOL); Cloudflare's WARP edge does not
+	// announce it (Xray skips the check too). The SETTINGS are still awaited.
+	SkipExtendedConnectCheck bool
 	// Congestion is installed on every QUIC connection (quic_params).
 	Congestion quicparams.Congestion
 	// Logger serves brutal_debug; may be nil.

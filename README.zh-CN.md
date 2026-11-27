@@ -41,7 +41,7 @@ Xray 的 XHTTP 可以把上行发到一台服务器、下行发到另一台（`d
 
 ## 🚀 快速开始
 
-在 Linux 上从源码构建。需要 git、bash、python3，以及上游构建所用的 Go 版本（`v1.15.0-alpha.13` 对应 1.26.10）。
+在 Linux 上从源码构建。需要 git、bash、python3，以及上游构建所用的 Go 版本（`v1.15.0-alpha.14` 对应 1.27.4）。
 
 ```bash
 git clone https://github.com/10ta/sing-box-ut
@@ -54,7 +54,7 @@ scripts/build.sh work sing-box
 `prepare.sh` 用 `upstream.ref` 里的 sing-box tag 和 `lx.ref` 里的 sing-box-lx 提交，在 `work/` 里拼出源码。最后一条命令打印版本号，以 `-ut` 结尾：
 
 ```text
-sing-box version 1.15.0-alpha.13-ut
+sing-box version 1.15.0-alpha.14-ut
 ```
 
 ## 📦 安装
@@ -106,7 +106,7 @@ PASS
 
 ```bash
 env GOOS=windows GOARCH=arm64 scripts/build.sh work sing-box.exe
-scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
+scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.14-ut sing-box_amd64.deb
 ```
 
 ## 🔧 配置
@@ -409,12 +409,14 @@ scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
 
 | Release | 对应的构建 |
 |---|---|
-| `v1.15.0-alpha.13-ut` | 一个 sing-box tag 的第一次构建 |
-| `v1.15.0-alpha.13-ut.2`、`.3`、… | 同一个 tag 的后续构建：sing-box-lx 更新，或本仓库的改动 |
+| `v1.15.0-alpha.14-ut` | 一个 sing-box tag 的第一次构建 |
+| `v1.15.0-alpha.14-ut.2`、`.3`、… | 同一个 tag 的后续构建：sing-box-lx 更新，或本仓库的改动 |
 
 ### 更新失败时
 
 把 issue 链接交给修复的人。修复推到 `main` 之后，下一次每日更新会重试同一个变化；关闭 issue 也会让它重试。变化通过后 issue 会自动关闭。不想等一天的话，运行 **Actions → update → Run workflow**。
+
+issue 开头写明问题类型（补丁冲突、编译、链接、单元测试、互通、示例、Android、网络）以及每类该从哪里查起。补丁只是上下文移动了的话，会对照 `patches/BASE` 里的版本用三方合并打上，不会让更新失败；这次运行会带一条警告，提醒重新生成那个补丁。
 
 workflow 会自己往 `main` 提交，所以推送自己的改动前先拉取：
 
@@ -468,6 +470,7 @@ flowchart LR
 ├── lx-files.txt              # which sing-box-lx files are copied
 ├── android-client.ref        # Android client commits no longer on its dev branch
 ├── patches/
+│   ├── BASE                           # the upstream tag and lx commit the patches were generated on
 │   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
 │   ├── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
 │   ├── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
@@ -503,7 +506,7 @@ flowchart LR
 ```bash
 cd work
 go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/http/ ./transport/masque/ ./transport/v2rayxhttp/ ./protocol/masque/ ./protocol/vless/...
-go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/v2rayxhttp/ ./protocol/masque/
+go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" -ldflags "$(cat release/LDFLAGS)" ./option/ ./common/quicparams/ ./transport/v2rayxhttp/ ./protocol/masque/
 ```
 
 四个测试包都显示 `ok`。要改下行、`quic_params` 或 WARP 的逻辑，先改 `work/` 里的文件，再按 [AGENTS.md](AGENTS.md) 的说明重新生成对应的补丁。加进 lx 文件的行都带 `// ut:` 标记；新代码放在 `*_ut.go` 文件里。
@@ -518,7 +521,7 @@ go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checkli
 
 ## 🔀 上游与差异
 
-用 [SagerNet/sing-box](https://github.com/SagerNet/sing-box) 在 `upstream.ref` 里的 tag 构建（撰写时为 `v1.15.0-alpha.13`），文件取自 [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 在 `lx.ref` 里的那个提交。
+用 [SagerNet/sing-box](https://github.com/SagerNet/sing-box) 在 `upstream.ref` 里的 tag 构建（撰写时为 `v1.15.0-alpha.14`），文件取自 [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) 在 `lx.ref` 里的那个提交。
 
 | 方面 | sing-box | sing-box-lx | 本仓库 |
 |---|---|---|---|

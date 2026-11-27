@@ -31,8 +31,9 @@ import (
 //   - CONNECT-IP with :protocol "cf-connect-ip" on path "/", authority
 //     warp.host (default cloudflareaccess.com), no ADDRESS_REQUEST: the tunnel
 //     uses warp.address at once;
-//   - SETTINGS 0x276 (draft HTTP Datagrams) sent and accepted, QUIC connection
-//     IDs of 20 bytes, no User-Agent unless headers set one;
+//   - SETTINGS 0x276 (draft HTTP Datagrams) sent and accepted, no wait for the
+//     server to announce Extended CONNECT, QUIC connection IDs of 20 bytes, no
+//     User-Agent unless headers set one;
 //   - TLS: a client certificate made from warp.private_key, the server
 //     certificate checked against warp.public_key only (no CA check); no SNI
 //     when tls.server_name is empty;
@@ -139,6 +140,7 @@ func prepareWARP(options *option.MASQUEClientEndpointOptions, version int, ut *c
 	ut.http3.ConnectionIDLength = 20
 	ut.http3.AdditionalSettings = map[uint64]uint64{http.SettingDatagramDraft00: 1}
 	ut.http3.DraftDatagrams = true
+	ut.http3.SkipExtendedConnectCheck = true
 	return nil
 }
 

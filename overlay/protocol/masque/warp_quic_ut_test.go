@@ -207,7 +207,7 @@ func TestWARPAgainstFakeEdge(t *testing.T) {
 	headers.Del("Host")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	httpClient, err := http.NewClientWithTLS(ctx, logger, N.SystemDialer, options.ServerOptions, common.PtrValueOrDefault(options.TLS), http.ClientOptions{
+	httpClient, err := http.NewClientWithTLS(ctx, logger, N.SystemDialer, options.ServerOptions, common.PtrValueOrDefault(options.TLS), nil, http.ClientOptions{
 		Authority:              authority,
 		Headers:                headers,
 		Version:                3,
@@ -298,7 +298,7 @@ func TestWARPPinRejectsOtherServer(t *testing.T) {
 	headers := options.Headers.Build()
 	authority := headers.Get("Host")
 	headers.Del("Host")
-	httpClient, err := http.NewClientWithTLS(context.Background(), logger, N.SystemDialer, options.ServerOptions, *options.TLS, http.ClientOptions{
+	httpClient, err := http.NewClientWithTLS(context.Background(), logger, N.SystemDialer, options.ServerOptions, *options.TLS, nil, http.ClientOptions{
 		Authority: authority, Headers: headers, Version: 3, DisableVersionFallback: true, HTTP3UT: ut.http3,
 	})
 	if err != nil {

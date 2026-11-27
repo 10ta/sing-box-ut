@@ -204,10 +204,13 @@ jobs:
           # Some of sing-box-lx's own tests are timing-sensitive and can fail
           # once under load (seen: TestHTTP1PacketUp). A real failure fails twice.
           # shellcheck disable=SC2086
-          go test -count=1 -race -tags "$tags" $packages || {
+          # The release linker flags: since alpha.14 test binaries that link
+          # service/oomkiller need -checklinkname=0 like the release build.
+          ldflags=$(cat release/LDFLAGS)
+          go test -count=1 -race -tags "$tags" -ldflags "$ldflags" $packages || {
             echo "::warning::tests failed once; running them again"
             # shellcheck disable=SC2086
-            go test -count=1 -race -tags "$tags" $packages
+            go test -count=1 -race -tags "$tags" -ldflags "$ldflags" $packages
           }
 
   binaries:

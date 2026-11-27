@@ -167,3 +167,22 @@
 - 原因：上游发 alpha.14 时重写了 sing-box-for-android 的 dev 分支，之前每个 alpha 的 `Bump version` 提交都没了；`android-client.sh` 在 dev 上找不到 `Bump version 1.15.0-alpha.13`，静默退回 tag 钉的 1.14.4 客户端。
 - 修法：新增 `android-client.ref`，记"版本 → 客户端提交"，按完整 SHA 拉取（被 force push 掉的提交 GitHub 仍然能按 SHA 取到，本地验证过 `07376b1`）。顺序：ref 文件 → dev 上的 `Bump version` → 仅正式版退回钉住的提交；alpha 两者都没有就当场报错，不再拖到 Kotlin 编译才失败。SHA 从最后一次出了 APK 的构建日志里拿（`Fetch the Android client` 这一步）。
 - 另：sing-box alpha.14 已发布，`0001` 打不上（`protocol/vless/outbound.go` 变了），并带来 quic-go 0.66、Go 1.27，要单独适配；预计每日更新会为它开 issue。
+
+## 2026-11-27：升级到 alpha.14（issue #2），以及更新失败的分类
+- **issue #2 本身**：六个 job 都停在 Prepare source；issue 里每个 job 只有"日志不可用：响应含终端转义序列"。新版 gh 不肯输出带转义序列的响应，而 job 日志总是带的。改为 curl 取日志，并清掉所有控制字符。
+- **这次的三个原因**：① `0001` 里 lx 加的 `tlsConfig != nil` 保护，alpha.14 自己也加了（写法不同，三方合并也解决不了，手工删掉这一段）；② alpha.14 重写了 HTTP/3 客户端（连接池、`dialOffer`），还新增了"服务端没宣告 Extended CONNECT 就拒绝隧道"的检查，Cloudflare 不宣告它，所以 `0004` 重做，并加了 `SkipExtendedConnectCheck`；③ 测试二进制链接 `service/oomkiller` 后需要 `-checklinkname=0`，CI 的测试步骤原来没带，会在链接时失败。lx `4f13ce0` 不用动。
+- **问题类型（issue 里的"问题类型"一节按这张表自动判断）**：
+
+| 类型 | 典型表现 | 处理 |
+|---|---|---|
+| 补丁冲突 | Prepare source：`patch does not apply`、`PATCH CONFLICT` | 只是上下文移动时 prepare 会自动三方合并（警告，不失败）；真冲突时在新版本上重做补丁，更新 `patches/BASE` |
+| lx 文件清单不匹配 | `lx-files.txt does not fit` | 调整清单；缺 lx 专有符号写桩 |
+| 编译失败 | `file.go:行:列:`、`undefined`、参数个数不对 | 上游或 lx 改了 API，改 overlay 或补丁 |
+| 链接失败 | `invalid reference to`、`link:` | 工具链 / 链接参数，测试和构建都带 `release/LDFLAGS` |
+| 单元测试失败 | `--- FAIL` | 行为变化，单独跑失败的测试 |
+| 互通测试失败 | interop 步骤失败 | 和钉住的 Xray 不兼容 |
+| 示例检查失败 | `check-examples.py` 的 `FAIL:` | 示例、两份 README、`sing-box check` 对齐 |
+| Android 构建失败 | Kotlin `does not implement abstract members` | 客户端和 libbox 不配，看 `android-client.ref` |
+| 网络或外部服务 | 解析失败、连接重置、5xx、限流 | 先重跑 |
+
+- **以后怎么避免**：`patches/BASE` 记下补丁生成时的上游 tag 和 lx 提交，`prepare.sh` 在补丁打不上时把这两个版本的对象取进来，用 `git apply --3way` 重试。上下文漂移（最常见的失败）就不会再卡住每日更新，只留一条重新生成补丁的警告。用本地假上游测过：`0001` 和最后一个补丁的上下文漂移都能合并（最后一个补丁合并后 `git diff` 仍只显示它）；重叠修改照常失败并列出文件。上游自己用另一种写法实现了同一处改动（这次的 ①）、上游 API 变化（②）仍要人来改，能做的是让 issue 一眼看出是哪一类。

@@ -41,7 +41,7 @@ The same goes for Cloudflare WARP over MASQUE: Xray reaches it with `masqueSetti
 
 ## 🚀 Quick Start
 
-Build from source on Linux. Needs git, bash, python3 and the Go version upstream builds with (1.26.10 for `v1.15.0-alpha.13`).
+Build from source on Linux. Needs git, bash, python3 and the Go version upstream builds with (1.27.4 for `v1.15.0-alpha.14`).
 
 ```bash
 git clone https://github.com/10ta/sing-box-ut
@@ -54,7 +54,7 @@ scripts/build.sh work sing-box
 `prepare.sh` assembles the source in `work/` from the sing-box tag in `upstream.ref` and the sing-box-lx commit in `lx.ref`. The last command prints the version, which ends in `-ut`:
 
 ```text
-sing-box version 1.15.0-alpha.13-ut
+sing-box version 1.15.0-alpha.14-ut
 ```
 
 ## 📦 Installation
@@ -106,7 +106,7 @@ PASS
 
 ```bash
 env GOOS=windows GOARCH=arm64 scripts/build.sh work sing-box.exe
-scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.13-ut sing-box_amd64.deb
+scripts/package-deb.sh work sing-box amd64 1.15.0-alpha.14-ut sing-box_amd64.deb
 ```
 
 ## 🔧 Configuration
@@ -409,12 +409,14 @@ A tried change becomes a commit on `main` and a release only when the unit tests
 
 | Release | Built for |
 |---|---|
-| `v1.15.0-alpha.13-ut` | the first build of a sing-box tag |
-| `v1.15.0-alpha.13-ut.2`, `.3`, … | later builds of the same tag: a sing-box-lx update, or a change to this repository |
+| `v1.15.0-alpha.14-ut` | the first build of a sing-box tag |
+| `v1.15.0-alpha.14-ut.2`, `.3`, … | later builds of the same tag: a sing-box-lx update, or a change to this repository |
 
 ### When an update fails
 
 Hand the issue's link to whoever fixes the build. Once the fix is on `main`, the next daily run retries the same change; closing the issue makes it retry as well. The issue closes itself when the change passes. To retry without waiting a day, run **Actions → update → Run workflow**.
+
+The issue opens with the failure's type (patch conflict, build, link, unit test, interop, examples, Android, network) and where to start for each. A patch whose context merely moved is applied with a 3-way merge against the versions in `patches/BASE` and does not fail the update; the run then carries a warning to regenerate that patch.
 
 The workflow commits to `main` itself, so pull before pushing your own changes:
 
@@ -468,6 +470,7 @@ flowchart LR
 ├── lx-files.txt              # which sing-box-lx files are copied
 ├── android-client.ref        # Android client commits no longer on its dev branch
 ├── patches/
+│   ├── BASE                           # the upstream tag and lx commit the patches were generated on
 │   ├── 0001-upstream-seams.patch      # hooks XHTTP and VLESS encryption into upstream files
 │   ├── 0002-lx-xhttp-download.patch   # the download endpoint, on the copied lx files
 │   ├── 0003-xhttp-quic-params.patch   # quic_params (QUIC congestion control), on the copied lx files
@@ -503,7 +506,7 @@ Run the unit tests of the patched packages in a prepared tree:
 ```bash
 cd work
 go vet -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/http/ ./transport/masque/ ./transport/v2rayxhttp/ ./protocol/masque/ ./protocol/vless/...
-go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" ./option/ ./common/quicparams/ ./transport/v2rayxhttp/ ./protocol/masque/
+go test -count=1 -tags "with_quic,with_utls,with_xhttp,badlinkname,tfogo_checklinkname0" -ldflags "$(cat release/LDFLAGS)" ./option/ ./common/quicparams/ ./transport/v2rayxhttp/ ./protocol/masque/
 ```
 
 All four test packages report `ok`. To change the download, `quic_params` or WARP logic, edit the files in `work/`, then regenerate that patch as described in [AGENTS.md](AGENTS.md). Lines added to lx files are marked `// ut:`; new code goes in `*_ut.go` files.
@@ -518,7 +521,7 @@ All four test packages report `ok`. To change the download, `quic_params` or WAR
 
 ## 🔀 Upstream & Differences
 
-Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at the tag in `upstream.ref` (`v1.15.0-alpha.13` at the time of writing), with files from [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) at the commit in `lx.ref`.
+Built from [SagerNet/sing-box](https://github.com/SagerNet/sing-box) at the tag in `upstream.ref` (`v1.15.0-alpha.14` at the time of writing), with files from [Leadaxe/sing-box-lx](https://github.com/Leadaxe/sing-box-lx) at the commit in `lx.ref`.
 
 | Aspect | sing-box | sing-box-lx | This repository |
 |---|---|---|---|

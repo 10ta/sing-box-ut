@@ -7,11 +7,9 @@ import (
 	"net"
 
 	"github.com/sagernet/quic-go"
-	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/quic-go/quicvarint"
 	"github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common/bufio"
-	E "github.com/sagernet/sing/common/exceptions"
 )
 
 // ut: dialQUICUT dials the QUIC connection of an HTTP/3 client. With the
@@ -63,22 +61,13 @@ func (c *http3ClientImpl) dialQUICTransportUT(ctx context.Context, rawConn net.C
 // DraftDatagrams and a server that announced only the draft-00 setting, quic-go
 // does not route datagrams to the stream, so they are read off the QUIC
 // connection here.
-func (c *http3ClientImpl) tunnelStreamUT(stream *http3.RequestStream, clientConn *http3.ClientConn) (DatagramStream, error) {
-	settings := clientConn.Settings()
-	base := &http3RequestDatagramStream{stream: stream, datagramsEnabled: settings.EnableDatagrams}
-	if settings.EnableDatagrams || !c.ut.DraftDatagrams || settings.Other[SettingDatagramDraft00] != 1 {
-		return base, nil
-	}
-	c.access.Lock()
-	quicConn := c.quicConn
-	current := c.conn == clientConn
-	c.access.Unlock()
-	if !current || quicConn == nil {
-		base.Close()
-		return nil, E.New("HTTP/3 connection replaced while opening the tunnel")
+func (c *http3ClientImpl) tunnelStreamUT(base *http3RequestDatagramStream, conn *http3Conn) DatagramStream {
+	settings := conn.Settings()
+	if settings.EnableDatagrams || !c.ut.DraftDatagrams || settings.Other[SettingDatagramDraft00] != 1 || conn.quicConn == nil {
+		return base
 	}
 	base.datagramsEnabled = true
-	return &http3DraftDatagramStream{http3RequestDatagramStream: base, conn: quicConn}, nil
+	return &http3DraftDatagramStream{http3RequestDatagramStream: base, conn: conn.quicConn}
 }
 
 type http3DraftDatagramStream struct {

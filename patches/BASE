@@ -1,0 +1,6 @@
+# The upstream tag and sing-box-lx commit patches/*.patch were generated on.
+# scripts/prepare.sh fetches these to retry a patch with a 3-way merge when the
+# pinned versions moved on. Update both lines whenever the patches are
+# regenerated (AGENTS.md → Commands).
+UPSTREAM_REF=v1.15.0-alpha.14
+LX_REF=4f13ce0d9277bbb9822e0555aec4c9a08f399d67
